@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-2.0';
+const VERSION = 'etapa-2.1';
 
 import express from 'express';
 import crypto from 'crypto';
@@ -330,11 +330,14 @@ async function ubicarClase(nombreAlumno, fecha){
   if(encontradas.length === 0) return { ok:false, motivo:'no estaba en el día '+fecha };
   if(encontradas.length === 1) return { ok:true, clases:encontradas, nota:'ubicada (1 hora)' };
 
-  /* ¿Son horas seguidas del mismo profe y sede? Entonces es una sola sesión. */
+  /* ¿Son horas seguidas en la misma sede? Entonces es una sola venida.
+     NO se mira el profe: un alumno que entrena de 7 a 9 en Lomas con dos
+     profes distintos vino UNA vez. Si dice "mañana no puedo", no viene a
+     ninguna de las dos. */
   const orden = encontradas.slice().sort((a,b)=>a.horaIdx-b.horaIdx);
-  const mismoLugar = orden.every(c => c.sede===orden[0].sede && c.profe===orden[0].profe);
-  const seguidas   = orden.every((c,i) => i===0 || c.horaIdx === orden[i-1].horaIdx+1);
-  if(mismoLugar && seguidas)
+  const mismaSede = orden.every(c => c.sede===orden[0].sede);
+  const seguidas  = orden.every((c,i) => i===0 || c.horaIdx === orden[i-1].horaIdx+1);
+  if(mismaSede && seguidas)
     return { ok:true, clases:orden, nota:'ubicada (bloque de '+orden.length+' horas seguidas)' };
 
   return { ok:false, motivo:'varias clases separadas ese día — lo mira una persona', clases:orden };
@@ -442,8 +445,20 @@ app.post('/webhooks/whatsapp', (req,res) => {
       const anotable = t && t !== 'nada';
       if(anotable && fila.quien && fila.quien.encontrado){
         try{
-          if(t === 'cancela' || t === 'pedido'){
+          if(t === 'cancela'){
             fila.ubic = await ubicarClase(fila.quien.alumno.nombre, fila.clasi.fecha);
+          } else if(t === 'pedido'){
+            /* En un pedido, la fecha que dijo el alumno es A DÓNDE QUIERE IR,
+               no la clase que tiene. Así que se busca la clase que tiene HOY,
+               y si no tiene, la de MAÑANA: esa es la que hay que marcar. */
+            const hoy = new Date();
+            const iso = d => d.toISOString().slice(0,10);
+            fila.ubic = await ubicarClase(fila.quien.alumno.nombre, iso(hoy));
+            if(!fila.ubic.ok){
+              const man = new Date(hoy); man.setDate(man.getDate()+1);
+              const ubicMan = await ubicarClase(fila.quien.alumno.nombre, iso(man));
+              if(ubicMan.ok) fila.ubic = ubicMan;
+            }
           }
           fila.anotado = await anotarEnLibreta({
             tipo:   t,
