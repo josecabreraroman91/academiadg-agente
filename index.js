@@ -17,6 +17,11 @@
    Si coinciden, el cerebro nuevo está listo para tomar la posta.
    ============================================================ */
 
+/* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
+   saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
+   Railway a veces vuelve a levantar una versión vieja y no se nota. */
+const VERSION = 'etapa-1.0';
+
 import express from 'express';
 import crypto from 'crypto';
 
@@ -322,7 +327,7 @@ app.post('/webhooks/whatsapp', (req,res) => {
 
 /* ---------- Salud ---------- */
 app.get('/salud', (req,res) => {
-  res.json({ estado:'vivo', desde:arranque.toISOString(), ...totales, guardados:registro.length,
+  res.json({ estado:'vivo', version:VERSION, desde:arranque.toISOString(), ...totales, guardados:registro.length,
              claveIA: !!CLAVE_IA, claveAgente: !!AGENTE_PASSWORD });
 });
 
@@ -386,7 +391,7 @@ app.get('/', (req,res) => {
 '     font-size:11.5px;margin:7px 0 0;max-height:280px;white-space:pre-wrap;word-break:break-all}'+
 ' .vacio{color:#8b949e;text-align:center;padding:36px 0}'+
 '</style></head><body>'+
-'<h1>🎾 Agente Academia DG — Etapa 1</h1>'+
+'<h1>🎾 Agente Academia DG <span style="font-size:12px;color:#8b949e;font-weight:400">'+VERSION+'</span></h1>'+
 '<div class="sub">Entiende los mensajes pero <b>no contesta ninguno</b>. Nada se escribe en el calendario ni en la libreta.</div>'+
 '<div class="caja">'+
 '  <span class="num"><b>'+totales.recibidos+'</b>mensajes</span>'+
@@ -401,7 +406,7 @@ app.get('/', (req,res) => {
 });
 
 app.listen(PUERTO, () => {
-  console.log('🎾 Agente Academia DG · Etapa 1 — puerto '+PUERTO);
+  console.log('🎾 Agente Academia DG · '+VERSION+' — puerto '+PUERTO);
   if(!SECRETO)         console.log('   ⚠ Sin WEBHOOK_SECRET: no se verifica la firma.');
   if(!CLAVE_IA)        console.log('   ⚠ Sin ANTHROPIC_API_KEY: no va a clasificar.');
   if(!AGENTE_PASSWORD) console.log('   ⚠ Sin AGENTE_PASSWORD: no va a poder leer el padrón.');
