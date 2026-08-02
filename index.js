@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-2.1';
+const VERSION = 'etapa-2.2';
 
 import express from 'express';
 import crypto from 'crypto';
@@ -328,7 +328,7 @@ async function ubicarClase(nombreAlumno, fecha){
   }
 
   if(encontradas.length === 0) return { ok:false, motivo:'no estaba en el día '+fecha };
-  if(encontradas.length === 1) return { ok:true, clases:encontradas, nota:'ubicada (1 hora)' };
+  if(encontradas.length === 1) return { ok:true, fecha:fecha, clases:encontradas, nota:'ubicada (1 hora)' };
 
   /* ¿Son horas seguidas en la misma sede? Entonces es una sola venida.
      NO se mira el profe: un alumno que entrena de 7 a 9 en Lomas con dos
@@ -338,7 +338,7 @@ async function ubicarClase(nombreAlumno, fecha){
   const mismaSede = orden.every(c => c.sede===orden[0].sede);
   const seguidas  = orden.every((c,i) => i===0 || c.horaIdx === orden[i-1].horaIdx+1);
   if(mismaSede && seguidas)
-    return { ok:true, clases:orden, nota:'ubicada (bloque de '+orden.length+' horas seguidas)' };
+    return { ok:true, fecha:fecha, clases:orden, nota:'ubicada (bloque de '+orden.length+' horas seguidas)' };
 
   return { ok:false, motivo:'varias clases separadas ese día — lo mira una persona', clases:orden };
 }
@@ -460,12 +460,17 @@ app.post('/webhooks/whatsapp', (req,res) => {
               if(ubicMan.ok) fila.ubic = ubicMan;
             }
           }
+          /* LA FECHA DEL RENGLÓN ES LA DE LA CLASE UBICADA, no la que pidió el
+             alumno. En un pedido son distintas: escribe "cambio al jueves" pero
+             su clase es el lunes. Si se guardara el jueves, el calendario iría a
+             buscarlo ahí, no lo encontraría, y no aplicaría nada — en silencio.
+             El día que pidió sigue estando a la vista en el texto del mensaje. */
           fila.anotado = await anotarEnLibreta({
             tipo:   t,
             alumno: fila.quien.alumno.nombre,
             texto:  msg.texto,
             tel:    msg.tel,
-            fecha:  fila.clasi.fecha,
+            fecha:  (fila.ubic && fila.ubic.ok && fila.ubic.fecha) ? fila.ubic.fecha : fila.clasi.fecha,
             hasta:  fila.clasi.hasta,
             motivo: fila.clasi.motivo,
             clases: fila.ubic && fila.ubic.ok ? fila.ubic.clases : null
