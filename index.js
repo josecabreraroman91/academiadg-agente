@@ -1,26 +1,31 @@
 /* ============================================================
-   AGENTE DE ACADEMIA DG — ETAPA 1
-
-   El servidor ahora ENTIENDE, pero sigue SIN CONTESTAR.
+   AGENTE DE ACADEMIA DG — ETAPA 2
 
    Por cada mensaje que llega:
      1. Busca de qué alumno es ese teléfono, en el padrón
      2. Le pide a Claude que lo clasifique
-     3. Anota en la pantalla qué HABRÍA hecho
+     3. UBICA LA CLASE en la copia del día
+     4. ESCRIBE EL RENGLÓN EN LA LIBRETA
 
-   Lo que NO hace, y es a propósito:
-     · No le contesta a ningún alumno
-     · No escribe nada en Firebase
-     · No toca el calendario ni la libreta
+   SIGUE SIN CONTESTARLE A NINGÚN ALUMNO. Esa parte es la Etapa 3.
 
-   La idea es dejarlo unos días al lado del agente de Kapso y comparar.
-   Si coinciden, el cerebro nuevo está listo para tomar la posta.
+   ⚠️ A PARTIR DE ACÁ HAY CONSECUENCIAS REALES.
+   El calendario lee la libreta y la aplica SOLO, sin esperar aprobación:
+   un "cancela" saca al alumno de la grilla y lo marca ausente. Es el
+   comportamiento que ya existe hoy; no lo cambia este servidor.
+
+   ⚠️ NO DEJAR PRENDIDO EL FLUJO DE KAPSO AL MISMO TIEMPO.
+   Los dos escriben en la misma libreta y cada mensaje quedaría anotado
+   dos veces. El interruptor está arriba a la izquierda en Flujos de trabajo.
+
+   Solo se anota si se sabe DE QUIÉN es el mensaje. Sin alumno no hay
+   renglón: un renglón sin nombre no lo puede aplicar nadie.
    ============================================================ */
 
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-1.0';
+const VERSION = 'etapa-2.0';
 
 import express from 'express';
 import crypto from 'crypto';
@@ -41,7 +46,7 @@ const AGENTE_PASSWORD = process.env.AGENTE_PASSWORD || '';
 const CUANTOS_GUARDA = 100;
 const registro = [];
 const arranque = new Date();
-const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, errores:0 };
+const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, errores:0 };
 
 function anotar(evento){
   registro.unshift({ ...evento, cuando:new Date().toISOString() });
@@ -94,6 +99,20 @@ async function leerFirebase(ruta){
   const r = await fetch(FB_URL+'/'+ruta+'.json?auth='+encodeURIComponent(tk));
   if(!r.ok) throw new Error('Firebase respondió '+r.status+' en '+ruta);
   return await r.json();
+}
+
+/* Agrega un renglón nuevo. Nunca pisa nada: la libreta no se corrige ni se
+   borra, y eso lo garantizan las reglas de Firebase, no este código. */
+async function agregarEnFirebase(ruta, dato){
+  const tk = await credencial();
+  const r = await fetch(FB_URL+'/'+ruta+'.json?auth='+encodeURIComponent(tk),
+    { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(dato) });
+  const d = await r.json().catch(()=>null);
+  if(!r.ok){
+    const cual = (d && d.error) || r.status;
+    throw new Error('No pude escribir en '+ruta+': '+cual);
+  }
+  return d && d.name;
 }
 
 /* ============================================================
@@ -260,6 +279,107 @@ async function clasificar(texto, hoy){
   return { ...uso.input, gasto: d.usage || null };
 }
 
+/* ============================================================
+   UBICAR LA CLASE
+
+   Con el alumno y la fecha, busca en la copia del día (dia/{fecha}) en las
+   cuatro sedes y averigua dónde tiene clase: sede, hora, profe.
+
+   LA REGLA DE LAS HORAS SEGUIDAS
+   · Dos horas seguidas con el mismo profe y la misma sede (14:00 y 15:00) son
+     UNA SOLA sesión. Se cancela el bloque entero.
+   · Horas separadas (10:00 y 16:00) son sesiones distintas. "Mañana no puedo"
+     no dice cuál, así que NO SE ADIVINA: el renglón queda sin dirección para
+     que lo mire una persona.
+   ============================================================ */
+const SEDES = ['lomas','elite','segurola','adefinir'];
+const HORAS = ['6:00','7:00','8:00','9:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00','21:00'];
+
+/* La misma limpieza que usa el calendario. Si limpiara distinto, encontraría
+   clases que el calendario después no encuentra, y no aplicaría nada. */
+function normNombre(s){
+  return String(s==null?'':s).trim().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .replace(/[\u{1F300}-\u{1FFFF}]/gu,' ').replace(/\uFE0F/g,' ')
+    .replace(/\s+/g,' ').trim();
+}
+function claveNombre(s){
+  let t = normNombre(s), antes;
+  do { antes=t; t=t.replace(/\s+(lomas|elite|segurola|a definir|dual|individual|ind|grupal|noche)\s*$/,'').trim(); }
+  while(t!==antes);
+  return t.replace(/\.+$/,'').trim();
+}
+
+async function ubicarClase(nombreAlumno, fecha){
+  if(!fecha) return { ok:false, motivo:'el mensaje no dijo de qué día' };
+  const buscado = claveNombre(nombreAlumno);
+  const encontradas = [];
+
+  for(const sede of SEDES){
+    let recs = null;
+    try{ recs = await leerFirebase('dia/'+fecha+'/'+sede); }catch(e){ continue; }
+    if(!recs) continue;
+    for(const k of Object.keys(recs)){
+      const r = recs[k];
+      if(!r || !r.nombre) continue;
+      if(claveNombre(r.nombre) !== buscado) continue;
+      encontradas.push({ sede, diaKey:k, horaIdx:r.horaIdx, profe:r.profe||'', nombreEnGrilla:r.nombre });
+    }
+  }
+
+  if(encontradas.length === 0) return { ok:false, motivo:'no estaba en el día '+fecha };
+  if(encontradas.length === 1) return { ok:true, clases:encontradas, nota:'ubicada (1 hora)' };
+
+  /* ¿Son horas seguidas del mismo profe y sede? Entonces es una sola sesión. */
+  const orden = encontradas.slice().sort((a,b)=>a.horaIdx-b.horaIdx);
+  const mismoLugar = orden.every(c => c.sede===orden[0].sede && c.profe===orden[0].profe);
+  const seguidas   = orden.every((c,i) => i===0 || c.horaIdx === orden[i-1].horaIdx+1);
+  if(mismoLugar && seguidas)
+    return { ok:true, clases:orden, nota:'ubicada (bloque de '+orden.length+' horas seguidas)' };
+
+  return { ok:false, motivo:'varias clases separadas ese día — lo mira una persona', clases:orden };
+}
+
+/* ============================================================
+   ESCRIBIR EN LA LIBRETA
+
+   Un renglón por hora, para que el cobro cuadre. La libreta no se corrige ni
+   se borra: lo único que cambia después es el semáforo, cuando el calendario
+   la aplica.
+   ============================================================ */
+async function anotarEnLibreta(datos){
+  const base = {
+    tipo:   datos.tipo,
+    alumno: datos.alumno,
+    texto:  String(datos.texto||'').slice(0,1000),
+    tel:    String(datos.tel||''),
+    ts:     Date.now(),
+    estado: 'pendiente'
+  };
+  if(datos.fecha)  base.fecha  = datos.fecha;
+  if(datos.hasta)  base.hasta  = datos.hasta;
+  if(datos.motivo) base.motivo = datos.motivo;
+
+  /* Una ausencia larga no lleva sede ni hora: son todas sus clases. */
+  const clases = (datos.tipo==='ausencia' || !datos.clases || !datos.clases.length) ? [null] : datos.clases;
+
+  const puestos = [];
+  for(const c of clases){
+    const fila = { ...base };
+    if(c){
+      fila.sede    = c.sede;
+      fila.horaIdx = c.horaIdx;
+      fila.profe   = c.profe;
+      fila.diaKey  = c.diaKey;
+      /* El nombre va TAL CUAL está en la grilla: el calendario verifica que
+         coincida antes de aplicar, y si no coincide no toca nada. */
+      fila.alumno  = c.nombreEnGrilla || base.alumno;
+    }
+    puestos.push(await agregarEnFirebase('agente_v1/anotaciones', fila));
+  }
+  return puestos;
+}
+
 /* Lo único que el agente contesta, y solo a las confirmaciones. En esta etapa
    NO se manda: se muestra en pantalla para poder compararlo. */
 const RESPUESTAS = ['Dale, ahí te espero 🎾','Buenísimo 💪🏻 nos vemos 🎾','Genial, te espero 🎾'];
@@ -314,6 +434,33 @@ app.post('/webhooks/whatsapp', (req,res) => {
         fila.clasi = { tipo:'nada', porque:'no es un mensaje de texto ('+(msg.tipo||'?')+')' };
       }
 
+      /* ---- ANOTAR EN LA LIBRETA ----
+         Solo si hay alumno y el tipo amerita. Un "nada" no se anota: sería
+         llenar la libreta de saludos. Sin alumno tampoco: un renglón sin
+         nombre no lo puede aplicar nadie. */
+      const t = fila.clasi && fila.clasi.tipo;
+      const anotable = t && t !== 'nada';
+      if(anotable && fila.quien && fila.quien.encontrado){
+        try{
+          if(t === 'cancela' || t === 'pedido'){
+            fila.ubic = await ubicarClase(fila.quien.alumno.nombre, fila.clasi.fecha);
+          }
+          fila.anotado = await anotarEnLibreta({
+            tipo:   t,
+            alumno: fila.quien.alumno.nombre,
+            texto:  msg.texto,
+            tel:    msg.tel,
+            fecha:  fila.clasi.fecha,
+            hasta:  fila.clasi.hasta,
+            motivo: fila.clasi.motivo,
+            clases: fila.ubic && fila.ubic.ok ? fila.ubic.clases : null
+          });
+          totales.anotados += fila.anotado.length;
+        }catch(e){ fila.errorAnotar = e.message; totales.errores++; }
+      } else if(anotable){
+        fila.noAnotado = 'no se sabe de quién es el mensaje';
+      }
+
       anotar(fila);
       console.log('📩', msg.tel, '·', (fila.quien && fila.quien.alumno && fila.quien.alumno.nombre) || 'sin alumno',
                   '·', (fila.clasi && fila.clasi.tipo) || 'sin clasificar', '·', msg.texto.slice(0,60));
@@ -366,6 +513,12 @@ app.get('/', (req,res) => {
         (c.fecha?' · fecha '+esc(c.fecha):'')+(c.hasta?' · hasta '+esc(c.hasta):'')+(c.motivo?' · '+esc(c.motivo):'')+
         (c.porque?'<div class="por">'+esc(c.porque)+'</div>':'')+
         (r.errorClasi?'<span class="alerta">'+esc(r.errorClasi)+'</span>':'')+'</div>'+
+      (r.ubic?'<div class="linea"><span class="et">Qué clase</span> '+(r.ubic.ok
+          ? esc(r.ubic.nota)+' · '+esc(r.ubic.clases.map(function(c){return HORAS[c.horaIdx]+' '+c.sede.toUpperCase()+' '+c.profe}).join(' + '))
+          : '<span class="alerta">'+esc(r.ubic.motivo)+'</span>')+'</div>':'')+
+      (r.anotado?'<div class="linea"><span class="et">En la libreta</span> <b style="color:#2ea043">✓ '+r.anotado.length+' renglón(es)</b> <span class="pin">'+esc(r.anotado.join(', ').slice(0,40))+'</span></div>':'')+
+      (r.noAnotado?'<div class="linea"><span class="et">En la libreta</span> <span class="alerta">no se anotó — '+esc(r.noAnotado)+'</span></div>':'')+
+      (r.errorAnotar?'<div class="linea"><span class="et">En la libreta</span> <span class="alerta">'+esc(r.errorAnotar)+'</span></div>':'')+
       (r.habriaContestado?'<div class="linea"><span class="et">Habría contestado</span> <i>'+esc(r.habriaContestado)+'</i> <span class="pin">no se envió</span></div>':'')+
       '<details><summary>ver lo que mandó Kapso</summary><pre>'+esc(JSON.stringify(r.cuerpo,null,2))+'</pre></details>'+
     '</div>';
@@ -392,11 +545,12 @@ app.get('/', (req,res) => {
 ' .vacio{color:#8b949e;text-align:center;padding:36px 0}'+
 '</style></head><body>'+
 '<h1>🎾 Agente Academia DG <span style="font-size:12px;color:#8b949e;font-weight:400">'+VERSION+'</span></h1>'+
-'<div class="sub">Entiende los mensajes pero <b>no contesta ninguno</b>. Nada se escribe en el calendario ni en la libreta.</div>'+
+'<div class="sub">Entiende los mensajes y los <b>anota en la libreta</b>. Todavía <b>no contesta ninguno</b>.</div>'+
 '<div class="caja">'+
 '  <span class="num"><b>'+totales.recibidos+'</b>mensajes</span>'+
 '  <span class="num"><b>'+totales.clasificados+'</b>clasificados</span>'+
 '  <span class="num"><b>'+totales.sinAlumno+'</b>sin alumno</span>'+
+'  <span class="num"><b>'+totales.anotados+'</b>en la libreta</span>'+
 '  <span class="num"><b>'+totales.errores+'</b>errores</span>'+
 '  <span class="num"><b>'+totales.firmaMal+'</b>firma inválida</span>'+
 '</div>'+
