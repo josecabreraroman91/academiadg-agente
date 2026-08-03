@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-2.3';
+const VERSION = 'etapa-2.4';
 
 import express from 'express';
 import crypto from 'crypto';
@@ -46,7 +46,7 @@ const AGENTE_PASSWORD = process.env.AGENTE_PASSWORD || '';
 const CUANTOS_GUARDA = 100;
 const registro = [];
 const arranque = new Date();
-const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, errores:0 };
+const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, deOtro:0, errores:0 };
 
 /* ---------- QUÉ DÍA ES EN ASUNCIÓN ----------
    Este servidor vive en hora universal, que va adelante de Paraguay. Pidiéndole
@@ -268,6 +268,24 @@ REGLAS QUE NO SE ROMPEN
 5. Si menciona salud, lesión o un problema personal, es ausencia o nada, nunca cancela a secas.
 6. Distinguí cancela de ausencia por el alcance: una clase es cancela, un período es ausencia.
 
+DE QUIÉN HABLA EL MENSAJE
+Muchos teléfonos son de una madre o un padre que escribe por su hijo, y a veces
+por más de un hijo. El teléfono te dice UN alumno, pero el mensaje puede estar
+hablando de otro, o de dos a la vez. Si te equivocás de persona, sacás de la
+clase justo al que sí venía.
+
+Marcá sobreOtraPersona = true cuando el mensaje:
+- nombra a alguien: "no vamos a poder ir con Enzo", "tenemos que suspender lo de Joaquín", "mi querido Eitan no va a poder", "hoy no va Uma"
+- habla en plural: "no vamos", "no podemos", "no vamos a estar", "no llegamos"
+- habla de un tercero sin nombrarlo: "no va a poder venir", "está con tos y no entrena", "ella no llega"
+- mezcla dos personas: "yo no llego pero Maxi sí", "va Anita hoy, yo no llego"
+
+Marcá sobreOtraPersona = false cuando el mensaje habla claramente en primera
+persona y de una sola persona: "mañana no puedo", "no llego", "ahí estoy".
+
+Ante la duda, true. Marcarlo de más solo hace que una persona lo mire; marcarlo
+de menos le saca la clase a quien no correspondía.
+
 LA FECHA
 Se te dice abajo qué día es hoy. Convertí lo que dice el alumno en una fecha concreta:
 - "hoy" = esa fecha · "mañana" = esa fecha más un día
@@ -292,6 +310,7 @@ async function clasificar(texto, hoy){
           type:'object',
           properties:{
             tipo:   { type:'string', enum:['confirma','cancela','pedido','ausencia','nada'] },
+            sobreOtraPersona: { type:'boolean', description:'true si el mensaje habla de otra persona además de o en vez de quien escribe, o si habla en plural. Ante la duda, true.' },
             fecha:  { type:'string', description:'AAAA-MM-DD de la clase, solo si es inequívoco. Si no, vacío.' },
             hasta:  { type:'string', description:'Para ausencias, hasta cuándo. Solo si el alumno lo dijo.' },
             motivo: { type:'string', enum:['lesion','viaje','otro',''] },
@@ -397,6 +416,9 @@ async function anotarEnLibreta(datos){
   if(datos.fecha)  base.fecha  = datos.fecha;
   if(datos.hasta)  base.hasta  = datos.hasta;
   if(datos.motivo) base.motivo = datos.motivo;
+  /* Por qué este renglón quedó celeste en vez de aplicarse. Lo lee una persona
+     en la libreta, así no tiene que adivinar. */
+  if(datos.nota)   base.nota   = datos.nota;
 
   /* Una ausencia larga no lleva sede ni hora: son todas sus clases. */
   const clases = (datos.tipo==='ausencia' || !datos.clases || !datos.clases.length) ? [null] : datos.clases;
@@ -464,12 +486,32 @@ app.post('/webhooks/whatsapp', (req,res) => {
           const hoy = hoyAsuncion();
           fila.clasi = await clasificar(msg.texto, hoy);
           totales.clasificados++;
-          if(fila.clasi.tipo === 'confirma'){
+          /* No se contesta un mensaje que habla de otra persona: sonaría a que
+             le confirmamos la clase a quien no era. */
+          if(fila.clasi.tipo === 'confirma' && !fila.clasi.sobreOtraPersona){
             fila.habriaContestado = RESPUESTAS[Math.floor(Math.random()*RESPUESTAS.length)];
           }
         }catch(e){ fila.errorClasi = e.message; totales.errores++; }
       } else {
         fila.clasi = { tipo:'nada', porque:'no es un mensaje de texto ('+(msg.tipo||'?')+')' };
+      }
+
+      /* ---- EL MENSAJE HABLA DE OTRA PERSONA ----
+         El teléfono devuelve UN alumno, pero muchos números son de una madre o
+         un padre que escribe por su hijo. Un "va Anita hoy, yo no llego" tiene
+         dos personas adentro: si el agente cancela la del teléfono, saca de la
+         grilla justo a la que sí venía, y esa clase no se cobra ni se paga.
+
+         En vez de decidir, se marca CELESTE y se deja pendiente: es el mismo
+         camino que ya usa un pedido de cambio. No borra a nadie, no libera el
+         lugar, y queda a la vista para que una persona resuelva. El tipo real
+         que había detectado queda guardado al lado, para que se entienda qué
+         quiso decir el mensaje. */
+      if(fila.clasi && fila.clasi.sobreOtraPersona &&
+         ['confirma','cancela','ausencia'].includes(fila.clasi.tipo)){
+        fila.tipoOriginal = fila.clasi.tipo;
+        fila.clasi = { ...fila.clasi, tipo:'pedido' };
+        totales.deOtro++;
       }
 
       /* ---- ANOTAR EN LA LIBRETA ----
@@ -506,6 +548,9 @@ app.post('/webhooks/whatsapp', (req,res) => {
             fecha:  (fila.ubic && fila.ubic.ok && fila.ubic.fecha) ? fila.ubic.fecha : fila.clasi.fecha,
             hasta:  fila.clasi.hasta,
             motivo: fila.clasi.motivo,
+            nota:   fila.tipoOriginal
+                      ? 'El mensaje habla de otra persona. Parecía '+fila.tipoOriginal+', pero no se aplicó: decide una persona.'
+                      : '',
             clases: fila.ubic && fila.ubic.ok ? fila.ubic.clases : null
           });
           totales.anotados += fila.anotado.length;
