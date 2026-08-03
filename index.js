@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-2.5';
+const VERSION = 'etapa-2.6';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -512,6 +512,27 @@ app.post('/webhooks/whatsapp', (req,res) => {
         try{
           if(t === 'cancela'){
             fila.ubic = await ubicarClase(fila.quien.alumno.nombre, fila.clasi.fecha);
+          } else if(t === 'confirma'){
+            /* UNA CONFIRMACIÓN CASI NUNCA TRAE FECHA.
+               El alumno contesta "dale" o "si firme" a la pregunta diaria, y esa
+               pregunta es SIEMPRE por mañana. Antes no se buscaba la clase para
+               nada: el renglón salía sin sede y el calendario no sabía dónde
+               pintar el verde, así que la confirmación se perdía. Y son el 24%
+               de todo lo que escriben los alumnos.
+
+               Orden: si el alumno dijo una fecha, esa manda. Si no, se busca la
+               clase de MAÑANA —que es por la que se preguntó— y recién si no
+               tiene ninguna, la de HOY, que cubre el recordatorio de las 11:00. */
+            const hoy = hoyAsuncion();
+            if(fila.clasi.fecha){
+              fila.ubic = await ubicarClase(fila.quien.alumno.nombre, fila.clasi.fecha);
+            } else {
+              fila.ubic = await ubicarClase(fila.quien.alumno.nombre, sumarDias(hoy,1));
+              if(!fila.ubic.ok){
+                const ubicHoy = await ubicarClase(fila.quien.alumno.nombre, hoy);
+                if(ubicHoy.ok) fila.ubic = ubicHoy;
+              }
+            }
           } else if(t === 'pedido'){
             /* En un pedido, la fecha que dijo el alumno es A DÓNDE QUIERE IR,
                no la clase que tiene. Así que se busca la clase que tiene HOY,
