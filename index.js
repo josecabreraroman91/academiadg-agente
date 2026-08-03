@@ -25,7 +25,13 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-2.4';
+const VERSION = 'etapa-2.5';
+
+/* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
+   Se anota como pedido, el calendario pinta la celda de celeste y una persona
+   mira qué pasó. Para que las cancelaciones vuelvan a aplicarse solas, poner
+   esto en false y volver a desplegar. Nada más. */
+const CANCELA_EN_CELESTE = true;
 
 import express from 'express';
 import crypto from 'crypto';
@@ -46,7 +52,7 @@ const AGENTE_PASSWORD = process.env.AGENTE_PASSWORD || '';
 const CUANTOS_GUARDA = 100;
 const registro = [];
 const arranque = new Date();
-const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, deOtro:0, errores:0 };
+const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, deOtro:0, cancelCeleste:0, errores:0 };
 
 /* ---------- QUÉ DÍA ES EN ASUNCIÓN ----------
    Este servidor vive en hora universal, que va adelante de Paraguay. Pidiéndole
@@ -496,24 +502,6 @@ app.post('/webhooks/whatsapp', (req,res) => {
         fila.clasi = { tipo:'nada', porque:'no es un mensaje de texto ('+(msg.tipo||'?')+')' };
       }
 
-      /* ---- EL MENSAJE HABLA DE OTRA PERSONA ----
-         El teléfono devuelve UN alumno, pero muchos números son de una madre o
-         un padre que escribe por su hijo. Un "va Anita hoy, yo no llego" tiene
-         dos personas adentro: si el agente cancela la del teléfono, saca de la
-         grilla justo a la que sí venía, y esa clase no se cobra ni se paga.
-
-         En vez de decidir, se marca CELESTE y se deja pendiente: es el mismo
-         camino que ya usa un pedido de cambio. No borra a nadie, no libera el
-         lugar, y queda a la vista para que una persona resuelva. El tipo real
-         que había detectado queda guardado al lado, para que se entienda qué
-         quiso decir el mensaje. */
-      if(fila.clasi && fila.clasi.sobreOtraPersona &&
-         ['confirma','cancela','ausencia'].includes(fila.clasi.tipo)){
-        fila.tipoOriginal = fila.clasi.tipo;
-        fila.clasi = { ...fila.clasi, tipo:'pedido' };
-        totales.deOtro++;
-      }
-
       /* ---- ANOTAR EN LA LIBRETA ----
          Solo si hay alumno y el tipo amerita. Un "nada" no se anota: sería
          llenar la libreta de saludos. Sin alumno tampoco: un renglón sin
@@ -535,22 +523,55 @@ app.post('/webhooks/whatsapp', (req,res) => {
               if(ubicMan.ok) fila.ubic = ubicMan;
             }
           }
+          /* ---- QUÉ TIPO SE ESCRIBE EN LA LIBRETA ----
+             Ojo: la clase YA se ubicó arriba usando el tipo REAL, porque cada
+             tipo la busca distinto (una cancelación usa la fecha que dijo el
+             alumno; un pedido busca la de hoy o la de mañana). Recién acá se
+             decide con qué nombre se guarda el renglón, que es lo que define
+             qué hace el calendario con él.
+
+             Dos casos se desvían a CELESTE, que marca y no toca nada:
+
+             1. El mensaje habla de otra persona. El teléfono devuelve UN alumno,
+                pero muchos números son de una madre o un padre. Un "va Anita hoy,
+                yo no llego" tiene dos personas adentro: cancelar la del teléfono
+                puede sacar de la grilla justo a la que sí venía.
+
+             2. TODAS las cancelaciones, mientras dure la prueba. En vez de sacar
+                al alumno solo, se pinta la celda y una persona mira qué pasó.
+                Cuando haya confianza, se pone CANCELA_EN_CELESTE en false y las
+                cancelaciones vuelven a aplicarse solas.
+
+             La ausencia NO se desvía: ya pinta celeste sin borrar a nadie, y
+             convertirla la dejaría sin sede y el calendario no la aplicaría. */
+          let tipoLibreta = t;
+          let porQue = '';
+          if(fila.clasi.sobreOtraPersona && (t === 'confirma' || t === 'cancela')){
+            tipoLibreta = 'pedido';
+            porQue = 'El mensaje habla de otra persona. Parecía '+t+', pero no se aplicó: decide una persona.';
+            totales.deOtro++;
+          } else if(t === 'cancela' && CANCELA_EN_CELESTE){
+            tipoLibreta = 'pedido';
+            porQue = 'Avisó que NO viene. No se sacó de la grilla a propósito: mirá el mensaje y sacalo vos si corresponde.';
+            totales.cancelCeleste++;
+          }
+          if(tipoLibreta !== t) fila.tipoOriginal = t;
+          fila.tipoLibreta = tipoLibreta;
+
           /* LA FECHA DEL RENGLÓN ES LA DE LA CLASE UBICADA, no la que pidió el
              alumno. En un pedido son distintas: escribe "cambio al jueves" pero
              su clase es el lunes. Si se guardara el jueves, el calendario iría a
              buscarlo ahí, no lo encontraría, y no aplicaría nada — en silencio.
              El día que pidió sigue estando a la vista en el texto del mensaje. */
           fila.anotado = await anotarEnLibreta({
-            tipo:   t,
+            tipo:   tipoLibreta,
             alumno: fila.quien.alumno.nombre,
             texto:  msg.texto,
             tel:    msg.tel,
             fecha:  (fila.ubic && fila.ubic.ok && fila.ubic.fecha) ? fila.ubic.fecha : fila.clasi.fecha,
             hasta:  fila.clasi.hasta,
             motivo: fila.clasi.motivo,
-            nota:   fila.tipoOriginal
-                      ? 'El mensaje habla de otra persona. Parecía '+fila.tipoOriginal+', pero no se aplicó: decide una persona.'
-                      : '',
+            nota:   porQue,
             clases: fila.ubic && fila.ubic.ok ? fila.ubic.clases : null
           });
           totales.anotados += fila.anotado.length;
@@ -576,6 +597,7 @@ app.get('/salud', (req,res) => {
              /* Para comprobar de un vistazo que el servidor sabe qué día y qué
                 hora es EN ASUNCIÓN, no en hora universal. */
              hoyEnAsuncion: hoyAsuncion(), horaEnAsuncion: horaAsuncion(),
+             cancelacionesEnCeleste: CANCELA_EN_CELESTE,
              ...totales, guardados:registro.length,
              claveIA: !!CLAVE_IA, claveAgente: !!AGENTE_PASSWORD });
 });
