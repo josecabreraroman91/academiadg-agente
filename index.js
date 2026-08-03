@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-2.2';
+const VERSION = 'etapa-2.3';
 
 import express from 'express';
 import crypto from 'crypto';
@@ -47,6 +47,41 @@ const CUANTOS_GUARDA = 100;
 const registro = [];
 const arranque = new Date();
 const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, errores:0 };
+
+/* ---------- QUÉ DÍA ES EN ASUNCIÓN ----------
+   Este servidor vive en hora universal, que va adelante de Paraguay. Pidiéndole
+   la fecha con toISOString(), a partir de las 21:00 de acá el servidor ya creía
+   que era el día siguiente: toda cancelación de esa franja quedaba anotada con
+   la fecha corrida un día. Y en los 37 chats medidos, uno de cada diez mensajes
+   de alumnos llega entre las 21:00 y las 6:00 — justo cuando avisan que mañana
+   no vienen.
+
+   No se resta un número fijo de horas a propósito. Se le pregunta a Node cuál
+   es la fecha en Asunción; si Paraguay vuelve a cambiar de huso horario, esto
+   sigue estando bien sin que nadie toque nada. */
+const ZONA_ACADEMIA = 'America/Asuncion';
+
+function hoyAsuncion(cuando){
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: ZONA_ACADEMIA, year:'numeric', month:'2-digit', day:'2-digit'
+  }).format(cuando || new Date());              // queda como 2026-08-03
+}
+
+function horaAsuncion(cuando){
+  return new Intl.DateTimeFormat('es-PY', {
+    timeZone: ZONA_ACADEMIA, hour:'2-digit', minute:'2-digit', hour12:false
+  }).format(cuando || new Date());              // queda como 11:04
+}
+
+/* Suma (o resta) días a una fecha 2026-08-03 sin pasar por husos horarios.
+   Hacerlo con new Date(iso) volvía a meter la hora universal por la ventana. */
+function sumarDias(iso, n){
+  const p = String(iso||'').split('-').map(Number);
+  if(p.length !== 3 || !p[0]) return iso;
+  const d = new Date(Date.UTC(p[0], p[1]-1, p[2]));
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0,10);
+}
 
 function anotar(evento){
   registro.unshift({ ...evento, cuando:new Date().toISOString() });
@@ -426,7 +461,7 @@ app.post('/webhooks/whatsapp', (req,res) => {
       /* Qué dice. Si no hay texto, no hay nada que clasificar. */
       if(msg.texto){
         try{
-          const hoy = new Date().toISOString().slice(0,10);
+          const hoy = hoyAsuncion();
           fila.clasi = await clasificar(msg.texto, hoy);
           totales.clasificados++;
           if(fila.clasi.tipo === 'confirma'){
@@ -451,12 +486,10 @@ app.post('/webhooks/whatsapp', (req,res) => {
             /* En un pedido, la fecha que dijo el alumno es A DÓNDE QUIERE IR,
                no la clase que tiene. Así que se busca la clase que tiene HOY,
                y si no tiene, la de MAÑANA: esa es la que hay que marcar. */
-            const hoy = new Date();
-            const iso = d => d.toISOString().slice(0,10);
-            fila.ubic = await ubicarClase(fila.quien.alumno.nombre, iso(hoy));
+            const hoy = hoyAsuncion();
+            fila.ubic = await ubicarClase(fila.quien.alumno.nombre, hoy);
             if(!fila.ubic.ok){
-              const man = new Date(hoy); man.setDate(man.getDate()+1);
-              const ubicMan = await ubicarClase(fila.quien.alumno.nombre, iso(man));
+              const ubicMan = await ubicarClase(fila.quien.alumno.nombre, sumarDias(hoy,1));
               if(ubicMan.ok) fila.ubic = ubicMan;
             }
           }
@@ -494,7 +527,11 @@ app.post('/webhooks/whatsapp', (req,res) => {
 
 /* ---------- Salud ---------- */
 app.get('/salud', (req,res) => {
-  res.json({ estado:'vivo', version:VERSION, desde:arranque.toISOString(), ...totales, guardados:registro.length,
+  res.json({ estado:'vivo', version:VERSION, desde:arranque.toISOString(),
+             /* Para comprobar de un vistazo que el servidor sabe qué día y qué
+                hora es EN ASUNCIÓN, no en hora universal. */
+             hoyEnAsuncion: hoyAsuncion(), horaEnAsuncion: horaAsuncion(),
+             ...totales, guardados:registro.length,
              claveIA: !!CLAVE_IA, claveAgente: !!AGENTE_PASSWORD });
 });
 
@@ -502,8 +539,8 @@ app.get('/salud', (req,res) => {
 app.get('/probar', async (req,res) => {
   const texto = req.query.texto || 'mañana no puedo, tengo examen';
   try{
-    const hoy = new Date().toISOString().slice(0,10);
-    res.json({ texto, resultado: await clasificar(texto, hoy) });
+    const hoy = hoyAsuncion();
+    res.json({ texto, hoyEnAsuncion: hoy, resultado: await clasificar(texto, hoy) });
   }catch(e){ res.status(500).json({ texto, error:e.message }); }
 });
 
