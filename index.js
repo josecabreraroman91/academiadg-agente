@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-2.8';
+const VERSION = 'etapa-3.1';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -268,7 +268,7 @@ nada — cualquier otra cosa: un saludo suelto, un agradecimiento, una consulta 
 
 REGLAS QUE NO SE ROMPEN
 1. Ante la duda, nada. Siempre. Es preferible que una persona lo mire a que te equivoques con la clase de alguien.
-2. Un emoji suelto NO es una confirmación, salvo que sea respuesta directa a una pregunta tuya. Un pulgar arriba sin contexto es nada.
+2. UN PULGAR ARRIBA O UN VISTO SOLOS SON UNA CONFIRMACIÓN. Los emojis 👍 👍🏻 👍🏼 👍🏽 👌 ✅ ☑️ ✔️ 🙌 💪, solos y sin ninguna palabra al lado, son confirma. En esta academia la única pregunta que la gente contesta con un pulgar es "¿Entrenamos mañana?", así que un pulgar quiere decir que sí viene. Los demás emojis solos —❤️ 😂 🎾 🙏 y cualquier otro— siguen siendo nada.
 3. Si no podés leer el mensaje —audio, imagen, sticker, documento— es nada.
 4. Si el mensaje tiene enojo, queja o reclamo, es nada. Aunque además cancele. Eso lo contesta una persona.
 5. Si menciona salud, lesión o un problema personal, es ausencia o nada, nunca cancela a secas.
@@ -282,13 +282,14 @@ REGLAS QUE NO SE ROMPEN
 10. Una respuesta CORTA que solo expresa acuerdo, presencia o disposición a venir, y no trae ninguna otra información adentro, es confirma. Ejemplos: firme, firmeee, si firme, listo, ahí estoy, ahí estaré, tal cual, obvio, de una, va, dale ahí estoy. La mayoría de los mensajes que recibís son la respuesta a una pregunta que la academia ya hizo: "Entrenamos mañana a las 7:00?". Una respuesta corta y afirmativa a eso es una confirmación, aunque no diga la palabra "sí".
    Esta regla NO se aplica si el mensaje trae algo más adentro: una pregunta, una condición, una fecha o una hora distinta, una queja, o el nombre de otra persona. En esos casos vale lo que digan las reglas de arriba.
 
-LO QUE SIGUE SIENDO NADA, SIN EXCEPCIÓN
-- Un saludo suelto: "hola", "holaa", "buen día", "buenas".
-- Un agradecimiento suelto: "gracias", "muchas gracias".
+11. UN SALUDO, UN GRACIAS O UN EMOJI PEGADOS A UNA CONFIRMACIÓN NO LA ANULAN. Antes de decidir, limpiá el mensaje: sacá el saludo del principio ("hola", "holaa", "buen día", "buenas", "buenas tardes", "hola profe"), sacá el agradecimiento del final ("gracias", "muchas gracias", "gracias profe", "grax") y sacá los emojis. Después clasificá lo que queda. Ejemplos: "Hola ok" queda "ok" → confirma. "Ok 👍" queda "ok" → confirma. "Confirmado gracias" queda "confirmado" → confirma. "Gracias, ahí estoy" queda "ahí estoy" → confirma. "Holaaa si voy" queda "si voy" → confirma. "Buenas tardes, confirmado" queda "confirmado" → confirma. "Hola Sii" queda "Sii" → confirma. "Hola profe, si entrenamos mañana" queda "si entrenamos mañana" → confirma. El saludo, el gracias y el emoji solo mandan cuando son TODO el mensaje y no queda nada más después de sacarlos.
+
+LO QUE SIGUE SIENDO NADA
+- Un saludo que es TODO el mensaje, sin nada más al lado: "hola", "holaa", "buen día", "buenas". Si después del saludo hay una confirmación, mandá la confirmación (regla 11).
+- Un agradecimiento que es TODO el mensaje: "gracias", "muchas gracias". Si el gracias viene pegado a una confirmación, mandá la confirmación (regla 11).
 - Una pregunta de hora o de lugar: "a qué hora?", "dónde?", "a qué hora y en dónde", "los sábados hasta qué hora?".
 - Una confirmación con una condición o una duda pegada: "si llueve no voy", "si hay lugar", "te aviso a la mañana", "creo que no llego", "te puedo avisar en un rato?", "si puedo mañana".
-- Un emoji, un sticker, un audio, una foto o un documento.
-Que existan las reglas 9 y 10 no cambia nada de esta lista.
+- Un emoji, un sticker, un audio, una foto o un documento que sean TODO el mensaje. Si el emoji acompaña a una palabra de confirmación, mandá la confirmación (regla 11). Y si el emoji solo es un pulgar arriba o un visto, mandá la regla 2: eso es confirma.
 
 DE QUIÉN HABLA EL MENSAJE
 Muchos teléfonos son de una madre o un padre que escribe por su hijo, y a veces
