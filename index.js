@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-2.6';
+const VERSION = 'etapa-2.8';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -260,7 +260,7 @@ async function quienEs(telefono, nombreContacto){
 const REGLAS = `Sos el asistente de Academia DG, una academia de pádel en Asunción con tres sedes: Lomas, Elite y Segurola.
 Tu trabajo es LEER el mensaje de un alumno y decidir de qué se trata. No inventes datos. No resuelvas nada.
 
-confirma — dice que viene a su clase. Ejemplos: sí, dale, confirmado, presente, ahí estoy, siii, ok
+confirma — dice que viene a su clase. Ejemplos: sí, si, dale, ok, oka, okey, listo, confirmado, confirmo, presente, ahí estoy, ahí estaré, firme, si firme, va, de una, tal cual, obvio, siii
 cancela — avisa que NO viene a una clase puntual. Ejemplos: mañana no puedo, hoy no llego
 pedido — quiere cambiar de día u horario, o pregunta si hay lugar. Ejemplos: puedo cambiar al jueves?, tenés lugar a las 16?
 ausencia — se va por un período, no por una clase. Ejemplos: me lesioné, no entreno dos semanas; me voy de viaje, vuelvo el 10
@@ -273,6 +273,22 @@ REGLAS QUE NO SE ROMPEN
 4. Si el mensaje tiene enojo, queja o reclamo, es nada. Aunque además cancele. Eso lo contesta una persona.
 5. Si menciona salud, lesión o un problema personal, es ausencia o nada, nunca cancela a secas.
 6. Distinguí cancela de ausencia por el alcance: una clase es cancela, un período es ausencia.
+7. Acá se escribe sin tildes y estirando las vocales. "firmeee", "siii", "daleee", "okaa", "listooo" son exactamente lo mismo que firme, si, dale, ok, listo. No los tomes por raros ni por dudosos: así habla la academia y así contestan los alumnos.
+8. IGNORÁ LAS TILDES Y LA ORTOGRAFÍA POR COMPLETO. Los alumnos escriben rápido, desde el celular, casi nunca ponen tildes y muchas veces les faltan letras o les sobran. Leé cada palabra por lo que quiere decir, no por cómo está escrita. Nunca clasifiques algo como "nada" porque falte una tilde, porque una palabra esté mal escrita o porque el mensaje esté en minúsculas. Eso no es una duda: es la forma normal de escribir de esta gente.
+9. EL "SI" SIN TILDE. Es la única palabra donde la tilde cambia lo que quiere decir: "sí" es una afirmación y "si" es una condición. Como nadie pone la tilde, no la uses para decidir. Usá esta prueba: sacale el "si" del principio al mensaje y mirá lo que queda.
+   - Si lo que queda se sostiene solo como una afirmación de que viene, es confirma: "si voy" queda "voy" → confirma. "si entrenamos mañana" queda "entrenamos mañana" → confirma. "si estoy" queda "estoy" → confirma. "si confirmado" queda "confirmado" → confirma. "si llego" queda "llego" → confirma.
+   - Si lo que queda queda colgado esperando un final, o es una condición, es nada: "si llueve no voy" → nada. "si hay lugar" → nada. "si es que puedo" → nada. "si no llueve" → nada.
+   - Dos que parecen afirmación y NO lo son, tratalas siempre como nada: "si puedo mañana" y "si puedo". El alumno está poniendo una condición, no confirmando.
+10. Una respuesta CORTA que solo expresa acuerdo, presencia o disposición a venir, y no trae ninguna otra información adentro, es confirma. Ejemplos: firme, firmeee, si firme, listo, ahí estoy, ahí estaré, tal cual, obvio, de una, va, dale ahí estoy. La mayoría de los mensajes que recibís son la respuesta a una pregunta que la academia ya hizo: "Entrenamos mañana a las 7:00?". Una respuesta corta y afirmativa a eso es una confirmación, aunque no diga la palabra "sí".
+   Esta regla NO se aplica si el mensaje trae algo más adentro: una pregunta, una condición, una fecha o una hora distinta, una queja, o el nombre de otra persona. En esos casos vale lo que digan las reglas de arriba.
+
+LO QUE SIGUE SIENDO NADA, SIN EXCEPCIÓN
+- Un saludo suelto: "hola", "holaa", "buen día", "buenas".
+- Un agradecimiento suelto: "gracias", "muchas gracias".
+- Una pregunta de hora o de lugar: "a qué hora?", "dónde?", "a qué hora y en dónde", "los sábados hasta qué hora?".
+- Una confirmación con una condición o una duda pegada: "si llueve no voy", "si hay lugar", "te aviso a la mañana", "creo que no llego", "te puedo avisar en un rato?", "si puedo mañana".
+- Un emoji, un sticker, un audio, una foto o un documento.
+Que existan las reglas 9 y 10 no cambia nada de esta lista.
 
 DE QUIÉN HABLA EL MENSAJE
 Muchos teléfonos son de una madre o un padre que escribe por su hijo, y a veces
