@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-3.2';
+const VERSION = 'etapa-3.3';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -772,18 +772,28 @@ app.get('/', (req,res) => {
    contra Kapso el 4/8: la respuesta trae message_status:'accepted' y el mensaje
    llega. Devuelve {ok:true, id} o {ok:false, error}.
    ============================================================ */
-async function enviarConfirmacion(destino, nombre, hora, sede){
+async function enviarConfirmacion(destino, nombre, hora, sede, plantilla){
   if(!KAPSO_API_KEY) return { ok:false, error:'Falta KAPSO_API_KEY' };
-  const cuerpo = {
-    messaging_product:'whatsapp', recipient_type:'individual', to:String(destino),
-    type:'template',
-    template:{ name:'confirmacion_entrenamiento', language:{ code:'es' },
+  /* Dos plantillas aprobadas en Meta:
+     · semana → confirmacion_entrenamiento: nombre + hora + sede
+     · sabado → confirmacion_sin_horario:  solo el nombre */
+  let template;
+  if(plantilla === 'sabado'){
+    template = { name:'confirmacion_sin_horario', language:{ code:'es' },
+      components:[{ type:'body', parameters:[
+        { type:'text', text:String(nombre||'') }
+      ]}] };
+  }else{
+    template = { name:'confirmacion_entrenamiento', language:{ code:'es' },
       components:[{ type:'body', parameters:[
         { type:'text', text:String(nombre||'') },
         { type:'text', text:String(hora||'') },
         { type:'text', text:String(sede||'') }
-      ]}]
-    }
+      ]}] };
+  }
+  const cuerpo = {
+    messaging_product:'whatsapp', recipient_type:'individual', to:String(destino),
+    type:'template', template
   };
   try{
     const r = await fetch(KAPSO_URL, { method:'POST',
@@ -811,6 +821,7 @@ app.post('/enviar-confirmaciones', async (req,res) => {
     if(!AGENTE_PASSWORD || clave !== AGENTE_PASSWORD)
       return res.status(401).json({ ok:false, error:'clave incorrecta' });
 
+    const plantilla = (req.body && req.body.plantilla) || req.query.plantilla || 'semana';
     const lista = (req.body && req.body.alumnos) || [];
     if(!Array.isArray(lista) || !lista.length)
       return res.status(400).json({ ok:false, error:'no vino ningún alumno' });
@@ -823,7 +834,7 @@ app.post('/enviar-confirmaciones', async (req,res) => {
     const resultados = [];
     let bien = 0, mal = 0;
     for(const a of lista){
-      const r = await enviarConfirmacion(a.tel, a.nombre, a.hora, a.sede);
+      const r = await enviarConfirmacion(a.tel, a.nombre, a.hora, a.sede, plantilla);
       if(r.ok){ bien++; } else { mal++; }
       resultados.push({ nombre:a.nombre, tel:a.tel, ok:r.ok, error:r.error||null });
       await new Promise(ok=>setTimeout(ok, 120));  // respiro entre mensajes
