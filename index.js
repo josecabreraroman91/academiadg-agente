@@ -49,6 +49,14 @@ const FB_URL     = 'https://academia-dg-default-rtdb.firebaseio.com';
 const AGENTE_EMAIL    = process.env.AGENTE_EMAIL    || 'agente@academiadg.local';
 const AGENTE_PASSWORD = process.env.AGENTE_PASSWORD || '';
 
+/* Envío por Meta (plantillas), vía Kapso. La llave es un SECRETO: va en Railway
+   como variable, NUNCA escrita a la vista en el código. El ID del número es el
+   mismo que usa la coexistencia. */
+const KAPSO_API_KEY   = process.env.KAPSO_API_KEY || '';
+const KAPSO_PHONE_ID  = process.env.KAPSO_PHONE_ID || '120737524342892';
+const KAPSO_URL       = 'https://api.kapso.ai/meta/whatsapp/v24.0/'+KAPSO_PHONE_ID+'/messages';
+const TOPE_ENVIO_DIA  = 250;   // tope de Meta sin verificación de empresa
+
 const CUANTOS_GUARDA = 100;
 const registro = [];
 const arranque = new Date();
@@ -673,7 +681,7 @@ app.get('/salud', (req,res) => {
              hoyEnAsuncion: hoyAsuncion(), horaEnAsuncion: horaAsuncion(),
              cancelacionesEnCeleste: CANCELA_EN_CELESTE,
              ...totales, guardados:registro.length,
-             claveIA: !!CLAVE_IA, claveAgente: !!AGENTE_PASSWORD });
+             claveIA: !!CLAVE_IA, claveAgente: !!AGENTE_PASSWORD, claveKapso: !!KAPSO_API_KEY });
 });
 
 /* ---------- Probar sin esperar un WhatsApp ---------- */
@@ -755,6 +763,73 @@ app.get('/', (req,res) => {
 (filas || '<div class="vacio">Todavía no llegó ningún mensaje.<br>Escribile al número de prueba de Kapso y recargá.</div>')+
 '<script>setTimeout(function(){location.reload()}, 20000)</script>'+
 '</body></html>');
+});
+
+/* ============================================================
+   ENVIAR UNA CONFIRMACIÓN POR PLANTILLA (Meta, vía Kapso)
+
+   Manda la plantilla confirmacion_entrenamiento a UN alumno. Probado a mano
+   contra Kapso el 4/8: la respuesta trae message_status:'accepted' y el mensaje
+   llega. Devuelve {ok:true, id} o {ok:false, error}.
+   ============================================================ */
+async function enviarConfirmacion(destino, nombre, hora, sede){
+  if(!KAPSO_API_KEY) return { ok:false, error:'Falta KAPSO_API_KEY' };
+  const cuerpo = {
+    messaging_product:'whatsapp', recipient_type:'individual', to:String(destino),
+    type:'template',
+    template:{ name:'confirmacion_entrenamiento', language:{ code:'es' },
+      components:[{ type:'body', parameters:[
+        { type:'text', text:String(nombre||'') },
+        { type:'text', text:String(hora||'') },
+        { type:'text', text:String(sede||'') }
+      ]}]
+    }
+  };
+  try{
+    const r = await fetch(KAPSO_URL, { method:'POST',
+      headers:{ 'Content-Type':'application/json', 'X-API-Key':KAPSO_API_KEY },
+      body: JSON.stringify(cuerpo) });
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok){ return { ok:false, error:(d && d.error && (d.error.message||d.error)) || ('HTTP '+r.status) }; }
+    const id = d && d.messages && d.messages[0] && d.messages[0].id;
+    return { ok:true, id: id || null };
+  }catch(e){ return { ok:false, error:e.message }; }
+}
+
+/* ============================================================
+   RUTA QUE LLAMA EL CALENDARIO PARA ENVIAR LAS CONFIRMACIONES
+
+   El calendario junta a los alumnos de mañana (nombre, hora, sede, tel) y se
+   los pasa acá. El servidor manda una por una y devuelve el resumen.
+
+   Protegida con la contraseña del agente, igual que las demás.
+   Frena si son más de 250 (tope de Meta) — salvo que se pase forzar=1.
+   ============================================================ */
+app.post('/enviar-confirmaciones', async (req,res) => {
+  try{
+    const clave = (req.body && req.body.clave) || req.query.clave || '';
+    if(!AGENTE_PASSWORD || clave !== AGENTE_PASSWORD)
+      return res.status(401).json({ ok:false, error:'clave incorrecta' });
+
+    const lista = (req.body && req.body.alumnos) || [];
+    if(!Array.isArray(lista) || !lista.length)
+      return res.status(400).json({ ok:false, error:'no vino ningún alumno' });
+
+    const forzar = String((req.body && req.body.forzar) || req.query.forzar || '') === '1';
+    if(lista.length > TOPE_ENVIO_DIA && !forzar)
+      return res.status(409).json({ ok:false, tope:true, cuantos:lista.length,
+        error:'Son '+lista.length+' mensajes, más que el tope de '+TOPE_ENVIO_DIA+' de Meta. Confirmá para mandar igual.' });
+
+    const resultados = [];
+    let bien = 0, mal = 0;
+    for(const a of lista){
+      const r = await enviarConfirmacion(a.tel, a.nombre, a.hora, a.sede);
+      if(r.ok){ bien++; } else { mal++; }
+      resultados.push({ nombre:a.nombre, tel:a.tel, ok:r.ok, error:r.error||null });
+      await new Promise(ok=>setTimeout(ok, 120));  // respiro entre mensajes
+    }
+    res.json({ ok:true, total:lista.length, bien, mal, resultados });
+  }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
 });
 
 app.listen(PUERTO, () => {
