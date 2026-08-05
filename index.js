@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-3.4';
+const VERSION = 'etapa-3.5';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -786,8 +786,30 @@ app.get('/', (req,res) => {
    contra Kapso el 4/8: la respuesta trae message_status:'accepted' y el mensaje
    llega. Devuelve {ok:true, id} o {ok:false, error}.
    ============================================================ */
+/* Emprolija el teléfono al formato internacional que Meta necesita (595 + 9 dígitos).
+   En el padrón los números están cargados de tres formas: 0981..., 595981... y
+   algunos con un 595 de más. Meta ACEPTA los mal escritos (los cuenta como "bien")
+   pero después NO los entrega. Por eso hay que dejarlos siempre como 595981078630. */
+function telInternacional(t){
+  let d = String(t==null?'':t).replace(/\D/g,'');   // solo dígitos
+  if(!d) return '';
+  while(d.startsWith('595595')) d = d.slice(3);      // 595 repetido -> uno solo
+  if(d.startsWith('5950')) d = '595' + d.slice(4);   // 595 + 0 de trunco -> 595
+  if(d.startsWith('595') && d.length>=11 && d.length<=13) return d;
+  d = d.replace(/^0+/, '');                           // saca ceros de adelante
+  if(!d.startsWith('595')) d = '595' + d;             // le pone el 595 si falta
+  return d;
+}
+/* Un celular paraguayo válido queda como 595 + 9XXXXXXXX (12 dígitos). Si no da
+   así, el número está mal en el padrón: mejor marcarlo como fallido y NO mandarlo
+   a ciegas, para que aparezca en "los que fallaron" y se pueda corregir. */
+function telPlausible(d){ return /^595[9][0-9]{8}$/.test(d); }
+
 async function enviarConfirmacion(destino, nombre, hora, sede, plantilla){
   if(!KAPSO_API_KEY) return { ok:false, error:'Falta KAPSO_API_KEY' };
+  const tel = telInternacional(destino);
+  if(!telPlausible(tel))
+    return { ok:false, error:'teléfono raro en el padrón: "'+String(destino||'')+'" → '+(tel||'(vacío)') };
   /* Dos plantillas aprobadas en Meta:
      · semana → confirmacion_entrenamiento: nombre + hora + sede
      · sabado → confirmacion_sin_horario:  solo el nombre */
@@ -806,7 +828,7 @@ async function enviarConfirmacion(destino, nombre, hora, sede, plantilla){
       ]}] };
   }
   const cuerpo = {
-    messaging_product:'whatsapp', recipient_type:'individual', to:String(destino),
+    messaging_product:'whatsapp', recipient_type:'individual', to:tel,
     type:'template', template
   };
   try{
