@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-3.5';
+const VERSION = 'etapa-3.6';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -791,19 +791,32 @@ app.get('/', (req,res) => {
    algunos con un 595 de más. Meta ACEPTA los mal escritos (los cuenta como "bien")
    pero después NO los entrega. Por eso hay que dejarlos siempre como 595981078630. */
 function telInternacional(t){
-  let d = String(t==null?'':t).replace(/\D/g,'');   // solo dígitos
+  const orig = String(t==null?'':t);
+  const tieneMas = orig.trim().startsWith('+');   // ¿lo escribieron con +?
+  let d = orig.replace(/\D/g,'');                  // solo dígitos
   if(!d) return '';
-  while(d.startsWith('595595')) d = d.slice(3);      // 595 repetido -> uno solo
-  if(d.startsWith('5950')) d = '595' + d.slice(4);   // 595 + 0 de trunco -> 595
-  if(d.startsWith('595') && d.length>=11 && d.length<=13) return d;
-  d = d.replace(/^0+/, '');                           // saca ceros de adelante
-  if(!d.startsWith('595')) d = '595' + d;             // le pone el 595 si falta
+
+  // 1) Si vino con +, YA es internacional (Paraguay o cualquier país): se respeta tal cual.
+  if(tieneMas) return d;
+
+  // 2) Sin +: hay que interpretar.
+  //    Local paraguayo: empieza con 0 (prefijo de tronco) -> 595 + resto sin el 0.
+  if(d.startsWith('0')) return '595' + d.replace(/^0+/, '');
+  //    Paraguayo ya con código 595 (limpia el 595 repetido o el 595+0 de tronco).
+  while(d.startsWith('595595')) d = d.slice(3);
+  if(d.startsWith('5950')) d = '595' + d.slice(4);
+  if(d.startsWith('595')) return d;
+  //    Celular paraguayo "pelado": 9 dígitos que arrancan con 9 -> le falta el 595.
+  if(d.length === 9 && d.startsWith('9')) return '595' + d;
+  //    Cualquier otra cosa SIN +: se asume internacional ya en formato de país
+  //    (54..., 55..., 34...) y se manda tal cual, sin ponerle 595.
   return d;
 }
-/* Un celular paraguayo válido queda como 595 + 9XXXXXXXX (12 dígitos). Si no da
-   así, el número está mal en el padrón: mejor marcarlo como fallido y NO mandarlo
-   a ciegas, para que aparezca en "los que fallaron" y se pueda corregir. */
-function telPlausible(d){ return /^595[9][0-9]{8}$/.test(d); }
+/* Un teléfono sirve si tiene un largo razonable de número internacional
+   (entre 8 y 15 dígitos, que es el máximo que permite el estándar). Si no,
+   está roto en el padrón: se marca como fallido y NO se manda a ciegas, para
+   que aparezca en "los que fallaron" con nombre y se pueda corregir. */
+function telPlausible(d){ return d.length >= 8 && d.length <= 15; }
 
 async function enviarConfirmacion(destino, nombre, hora, sede, plantilla){
   if(!KAPSO_API_KEY) return { ok:false, error:'Falta KAPSO_API_KEY' };
