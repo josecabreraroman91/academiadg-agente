@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-3.6';
+const VERSION = 'etapa-3.7';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -347,7 +347,10 @@ async function clasificar(texto, hoy){
       model:'claude-haiku-4-5-20251001',
       max_tokens:300,
       temperature:0,
-      system: REGLAS + '\n\nHOY ES: ' + hoy,
+      system: [
+        { type:'text', text: REGLAS, cache_control:{ type:'ephemeral' } },
+        { type:'text', text: 'HOY ES: ' + hoy }
+      ],
       tools:[{
         name:'clasificacion',
         description:'Clasifica el mensaje de un alumno de la academia',
