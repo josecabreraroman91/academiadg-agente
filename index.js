@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-3.3';
+const VERSION = 'etapa-3.4';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -101,6 +101,20 @@ function anotar(evento){
   registro.unshift({ ...evento, cuando:new Date().toISOString() });
   if(registro.length > CUANTOS_GUARDA) registro.pop();
 }
+
+/* ---------- Permiso de conexión (CORS) ----------
+   El calendario corre en orbepy.com y le habla a este servidor (que está en
+   Railway). Sin este permiso, el navegador bloquea la conexión por seguridad y
+   sale "Failed to fetch". Se permite a orbepy.com y a la apertura directa del
+   archivo (origin nulo). Las peticiones OPTIONS (el "permiso previo" que manda
+   el navegador antes del POST) se contestan al toque. */
+app.use(function(req, res, next){
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key');
+  if(req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 app.use(express.json({ limit:'1mb', verify:(req,res,buf)=>{ req.cuerpoCrudo = buf; } }));
 
