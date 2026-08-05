@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-3.1';
+const VERSION = 'etapa-3.2';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -427,6 +427,27 @@ async function ubicarClase(nombreAlumno, fecha){
    se borra: lo único que cambia después es el semáforo, cuando el calendario
    la aplica.
    ============================================================ */
+/* ============================================================
+   DECIDIR QUÉ HACER CON UN PEDIDO DE CAMBIO
+
+   Regla acordada con José:
+   - Si NO se ubica la clase actual del alumno  -> celeste (lo mira una persona).
+   - Si el destino es vago (sin fecha)          -> celeste (para siempre o duda).
+   - Si el destino es el MISMO día que su clase -> celeste (solo corre la hora ese día).
+   - Si el destino es OTRO día                  -> el calendario busca lugar en SU sede.
+
+   Devuelve {accion:'celeste', motivo} o {accion:'resolver', sede, fechaDestino}.
+   ============================================================ */
+function decidirPedido(claseActual, fechaPedida){
+  if(!claseActual || !claseActual.ok || !claseActual.clases || !claseActual.clases.length)
+    return { accion:'celeste', motivo:'No encontré su clase actual. Lo mira una persona.' };
+  if(!fechaPedida)
+    return { accion:'celeste', motivo:'No quedó claro a qué día se cambia. Lo mira una persona.' };
+  if(fechaPedida === claseActual.fecha)
+    return { accion:'celeste', motivo:'Pide correr la hora del mismo día. Lo mira una persona.' };
+  return { accion:'resolver', sede: claseActual.clases[0].sede, fechaDestino: fechaPedida };
+}
+
 async function anotarEnLibreta(datos){
   const base = {
     tipo:   datos.tipo,
@@ -439,6 +460,8 @@ async function anotarEnLibreta(datos){
   if(datos.fecha)  base.fecha  = datos.fecha;
   if(datos.hasta)  base.hasta  = datos.hasta;
   if(datos.motivo) base.motivo = datos.motivo;
+  /* Destino de un pedido puntual a otro día: lo lee el calendario para agendar. */
+  if(datos.destinoResolver){ base.destinoResolver = true; base.destinoFecha = datos.destinoFecha; base.destinoSede = datos.destinoSede; }
   /* Por qué este renglón quedó celeste en vez de aplicarse. Lo lee una persona
      en la libreta, así no tiene que adivinar. */
   if(datos.nota)   base.nota   = datos.nota;
@@ -560,6 +583,9 @@ app.post('/webhooks/whatsapp', (req,res) => {
               const ubicMan = await ubicarClase(fila.quien.alumno.nombre, sumarDias(hoy,1));
               if(ubicMan.ok) fila.ubic = ubicMan;
             }
+            /* Decidir el destino: mismo día -> celeste; otro día -> el calendario
+               busca lugar. La decisión se guarda en la fila para anotarla abajo. */
+            fila.decisionPedido = decidirPedido(fila.ubic, fila.clasi.fecha);
           }
           /* ---- QUÉ TIPO SE ESCRIBE EN LA LIBRETA ----
              Ojo: la clase YA se ubicó arriba usando el tipo REAL, porque cada
@@ -601,6 +627,13 @@ app.post('/webhooks/whatsapp', (req,res) => {
              su clase es el lunes. Si se guardara el jueves, el calendario iría a
              buscarlo ahí, no lo encontraría, y no aplicaría nada — en silencio.
              El día que pidió sigue estando a la vista en el texto del mensaje. */
+          /* Si es un pedido puntual a OTRO día, se le pasa al calendario el
+             destino (día y sede) para que busque lugar. Si es mismo día, no
+             ubica, o es vago, la decisión ya dice 'celeste' y no se pasa destino:
+             el calendario lo pinta como hasta ahora. */
+          var _dp = (tipoLibreta==='pedido' && fila.decisionPedido && fila.decisionPedido.accion==='resolver') ? fila.decisionPedido : null;
+          if(_dp && (!porQue)) porQue = 'Pidió cambiar a otro día. El calendario busca lugar en su sede.';
+          if(!_dp && tipoLibreta==='pedido' && fila.decisionPedido && fila.decisionPedido.motivo && !porQue) porQue = fila.decisionPedido.motivo;
           fila.anotado = await anotarEnLibreta({
             tipo:   tipoLibreta,
             alumno: fila.quien.alumno.nombre,
@@ -610,7 +643,10 @@ app.post('/webhooks/whatsapp', (req,res) => {
             hasta:  fila.clasi.hasta,
             motivo: fila.clasi.motivo,
             nota:   porQue,
-            clases: fila.ubic && fila.ubic.ok ? fila.ubic.clases : null
+            clases: fila.ubic && fila.ubic.ok ? fila.ubic.clases : null,
+            destinoResolver: _dp ? true : null,
+            destinoFecha:    _dp ? _dp.fechaDestino : null,
+            destinoSede:     _dp ? _dp.sede : null
           });
           totales.anotados += fila.anotado.length;
         }catch(e){ fila.errorAnotar = e.message; totales.errores++; }
