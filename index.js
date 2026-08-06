@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-3.8';
+const VERSION = 'etapa-3.9';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -200,6 +200,10 @@ async function guardarEnFirebase(ruta, dato){
    un reinicio del servidor. En memoria guardamos una copia por 60 segundos para
    no leer Firebase en cada mensaje. */
 let _enviados = { hasta:0, set:null };
+
+/* Cómo salió la última vez que se intentó guardar la lista de enviados. Se
+   muestra en /salud para que un fallo NUNCA vuelva a pasar desapercibido. */
+let ULTIMO_GUARDADO = null;
 
 function soloDigitos8(tel){ return String(tel||'').replace(/\D/g,'').slice(-8); }
 
@@ -605,19 +609,38 @@ app.post('/webhooks/whatsapp', (req,res) => {
       /* Qué dice. Si no hay texto, no hay nada que clasificar. */
       if(msg.texto){
         const hoy = hoyAsuncion();
-        /* ¿Este número está en las confirmaciones que mandamos? Si no, no es
-           parte de nuestro proceso (Diego cobrando, alumnos nuevos, horarios,
-           macanadas): no lo mandamos a Claude, no gasta un token. */
+        /* ¿Vale la pena clasificar este mensaje?
+
+           Se clasifica si pasa CUALQUIERA de estas dos puertas:
+             1. El número está en las confirmaciones que mandamos hoy, O
+             2. El número es de un alumno del padrón.
+
+           Son dos puertas a propósito. Si una falla —como el 6/8, que el guardado
+           de la lista venía siendo rechazado por Firebase y se perdió un día
+           entero de respuestas en silencio— la otra sigue atajando lo que
+           escriben los alumnos.
+
+           Lo que SIGUE quedando afuera y sin costar un peso: los números que no
+           son de ningún alumno (proveedores, gente nueva, equivocados). Ese era
+           el grueso del gasto. */
         let esRespuesta = true;
         try{
           const lista = await listaEnviados(hoy);
-          if(lista) esRespuesta = lista.has(soloDigitos8(msg.tel));
-          /* si lista es null, Firebase falló: dejamos esRespuesta en true para
-             no arriesgarnos a perder una confirmación. */
+          const esAlumno = !!(fila.quien && fila.quien.encontrado);
+          if(lista === null){
+            /* No pude leer la lista: no me arriesgo a perder una confirmación. */
+            fila.porQuePasa = 'no pude leer la lista';
+          } else if(lista.has(soloDigitos8(msg.tel))){
+            fila.porQuePasa = 'le mandamos la confirmación hoy';
+          } else if(esAlumno){
+            fila.porQuePasa = 'es un alumno del padrón';
+          } else {
+            esRespuesta = false;
+          }
         }catch(e){ fila.errorLista = e.message; }
 
         if(!esRespuesta){
-          fila.clasi = { tipo:'nada', porque:'el número no está en las confirmaciones de hoy — no es parte del proceso' };
+          fila.clasi = { tipo:'nada', porque:'no es de ningún alumno y no le mandamos confirmación — fuera del proceso' };
           totales.fueraDeLista = (totales.fueraDeLista||0) + 1;
         } else {
           try{
@@ -763,6 +786,7 @@ app.get('/salud', (req,res) => {
              /* Para comprobar de un vistazo que el servidor sabe qué día y qué
                 hora es EN ASUNCIÓN, no en hora universal. */
              hoyEnAsuncion: hoyAsuncion(), horaEnAsuncion: horaAsuncion(),
+             ultimoGuardadoDeLista: ULTIMO_GUARDADO,
              cancelacionesEnCeleste: CANCELA_EN_CELESTE,
              ...totales, guardados:registro.length,
              claveIA: !!CLAVE_IA, claveAgente: !!AGENTE_PASSWORD, claveKapso: !!KAPSO_API_KEY });
@@ -970,7 +994,11 @@ app.post('/enviar-confirmaciones', async (req,res) => {
       await guardarEnFirebase('agente_v1/enviados/'+hoyAsuncion(), paraGuardar);
       _enviados = { hasta:0, set:null };   // que el webhook relea la lista nueva
       guardadoLista = true;
-    }catch(e){ resultados.push({ avisoLista:'no se pudo guardar la lista: '+e.message }); }
+      ULTIMO_GUARDADO = { ok:true, cuando:new Date().toISOString(), cuantos:Object.keys(paraGuardar).length };
+    }catch(e){
+      resultados.push({ avisoLista:'no se pudo guardar la lista: '+e.message });
+      ULTIMO_GUARDADO = { ok:false, cuando:new Date().toISOString(), error:e.message };
+    }
 
     res.json({ ok:true, total:lista.length, bien, mal, guardadoLista, resultados });
   }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
