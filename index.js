@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-3.7';
+const VERSION = 'etapa-3.8';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -176,6 +176,57 @@ async function agregarEnFirebase(ruta, dato){
     throw new Error('No pude escribir en '+ruta+': '+cual);
   }
   return d && d.name;
+}
+
+/* Guarda (mezcla) datos en Firebase sin pisar lo que ya hay. Se usa para ir
+   sumando cada día a la lista de a quiénes les mandamos la confirmación. */
+async function guardarEnFirebase(ruta, dato){
+  const tk = await credencial();
+  const r = await fetch(FB_URL+'/'+ruta+'.json?auth='+encodeURIComponent(tk),
+    { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(dato) });
+  if(!r.ok){
+    const d = await r.json().catch(()=>null);
+    throw new Error('No pude guardar en '+ruta+': '+((d&&d.error)||r.status));
+  }
+  return true;
+}
+
+/* ---------- A quiénes les mandamos confirmación (para no gastar de más) ----------
+   El agente SOLO clasifica las respuestas de los números a los que les mandamos
+   la confirmación. Todo lo demás (Diego cobrando, hablando con alumnos nuevos,
+   organizando horarios o macaneando) ni se manda a Claude: no gasta ni un token.
+
+   La lista vive en Firebase, en agente_v1/enviados/<fecha>, así que SOBREVIVE a
+   un reinicio del servidor. En memoria guardamos una copia por 60 segundos para
+   no leer Firebase en cada mensaje. */
+let _enviados = { hasta:0, set:null };
+
+function soloDigitos8(tel){ return String(tel||'').replace(/\D/g,'').slice(-8); }
+
+function fechaMenosUn(diaISO){
+  const d = new Date(String(diaISO)+'T12:00:00Z');   // mediodía: no cruza husos
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0,10);
+}
+
+/* Devuelve un Set con los últimos 8 dígitos de los números de hoy y de ayer
+   (ayer cubre las respuestas que llegan pasada la medianoche). Si Firebase no
+   se pudo leer, devuelve null: en ese caso preferimos clasificar igual, porque
+   perder una confirmación es peor que gastar un token de más. */
+async function listaEnviados(hoy){
+  if(_enviados.set && Date.now() < _enviados.hasta) return _enviados.set;
+  const set = new Set();
+  let ok = false;
+  for(const f of [fechaMenosUn(hoy), hoy]){
+    try{
+      const obj = await leerFirebase('agente_v1/enviados/'+f);
+      ok = true;
+      if(obj) Object.keys(obj).forEach(k => set.add(k));
+    }catch(e){}
+  }
+  if(!ok) return null;
+  _enviados = { hasta: Date.now() + 60000, set };
+  return set;
 }
 
 /* ============================================================
@@ -553,16 +604,32 @@ app.post('/webhooks/whatsapp', (req,res) => {
 
       /* Qué dice. Si no hay texto, no hay nada que clasificar. */
       if(msg.texto){
+        const hoy = hoyAsuncion();
+        /* ¿Este número está en las confirmaciones que mandamos? Si no, no es
+           parte de nuestro proceso (Diego cobrando, alumnos nuevos, horarios,
+           macanadas): no lo mandamos a Claude, no gasta un token. */
+        let esRespuesta = true;
         try{
-          const hoy = hoyAsuncion();
-          fila.clasi = await clasificar(msg.texto, hoy);
-          totales.clasificados++;
-          /* No se contesta un mensaje que habla de otra persona: sonaría a que
-             le confirmamos la clase a quien no era. */
-          if(fila.clasi.tipo === 'confirma' && !fila.clasi.sobreOtraPersona){
-            fila.habriaContestado = RESPUESTAS[Math.floor(Math.random()*RESPUESTAS.length)];
-          }
-        }catch(e){ fila.errorClasi = e.message; totales.errores++; }
+          const lista = await listaEnviados(hoy);
+          if(lista) esRespuesta = lista.has(soloDigitos8(msg.tel));
+          /* si lista es null, Firebase falló: dejamos esRespuesta en true para
+             no arriesgarnos a perder una confirmación. */
+        }catch(e){ fila.errorLista = e.message; }
+
+        if(!esRespuesta){
+          fila.clasi = { tipo:'nada', porque:'el número no está en las confirmaciones de hoy — no es parte del proceso' };
+          totales.fueraDeLista = (totales.fueraDeLista||0) + 1;
+        } else {
+          try{
+            fila.clasi = await clasificar(msg.texto, hoy);
+            totales.clasificados++;
+            /* No se contesta un mensaje que habla de otra persona: sonaría a que
+               le confirmamos la clase a quien no era. */
+            if(fila.clasi.tipo === 'confirma' && !fila.clasi.sobreOtraPersona){
+              fila.habriaContestado = RESPUESTAS[Math.floor(Math.random()*RESPUESTAS.length)];
+            }
+          }catch(e){ fila.errorClasi = e.message; totales.errores++; }
+        }
       } else {
         fila.clasi = { tipo:'nada', porque:'no es un mensaje de texto ('+(msg.tipo||'?')+')' };
       }
@@ -885,13 +952,27 @@ app.post('/enviar-confirmaciones', async (req,res) => {
 
     const resultados = [];
     let bien = 0, mal = 0;
+    const paraGuardar = {};   // últimos 8 dígitos de cada número al que le mandamos
     for(const a of lista){
       const r = await enviarConfirmacion(a.tel, a.nombre, a.hora, a.sede, plantilla);
       if(r.ok){ bien++; } else { mal++; }
+      const u8 = soloDigitos8(a.tel);
+      if(u8) paraGuardar[u8] = true;
       resultados.push({ nombre:a.nombre, tel:a.tel, ok:r.ok, error:r.error||null });
       await new Promise(ok=>setTimeout(ok, 120));  // respiro entre mensajes
     }
-    res.json({ ok:true, total:lista.length, bien, mal, resultados });
+
+    /* Guardamos a quiénes les mandamos, para procesar SOLO sus respuestas. Si
+       esto falla (por ejemplo un permiso de Firebase), los mensajes ya se
+       enviaron igual: no rompemos el envío por esto. */
+    let guardadoLista = false;
+    try{
+      await guardarEnFirebase('agente_v1/enviados/'+hoyAsuncion(), paraGuardar);
+      _enviados = { hasta:0, set:null };   // que el webhook relea la lista nueva
+      guardadoLista = true;
+    }catch(e){ resultados.push({ avisoLista:'no se pudo guardar la lista: '+e.message }); }
+
+    res.json({ ok:true, total:lista.length, bien, mal, guardadoLista, resultados });
   }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
 });
 
