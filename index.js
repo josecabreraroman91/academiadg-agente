@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-3.9';
+const VERSION = 'etapa-4.0';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -945,7 +945,18 @@ async function enviarConfirmacion(destino, nombre, hora, sede, plantilla){
     const d = await r.json().catch(()=>({}));
     if(!r.ok){ return { ok:false, error:(d && d.error && (d.error.message||d.error)) || ('HTTP '+r.status) }; }
     const id = d && d.messages && d.messages[0] && d.messages[0].id;
-    return { ok:true, id: id || null };
+    const estado = d && d.messages && d.messages[0] && d.messages[0].message_status;
+    /* Kapso puede contestar 200 y aun así no haber creado el mensaje. Sin el
+       identificador, "enviado" es una suposición nuestra, no un hecho. Por eso
+       se devuelve TODO lo que contestó: es la única forma de saber en qué
+       eslabón se corta, en vez de seguir adivinando. */
+    if(!id){
+      return { ok:false, sinId:true,
+               error:'Kapso contestó OK pero no devolvió identificador de mensaje',
+               respuesta: JSON.stringify(d).slice(0,400) };
+    }
+    return { ok:true, id: id, estado: estado || null,
+             respuesta: JSON.stringify(d).slice(0,400) };
   }catch(e){ return { ok:false, error:e.message }; }
 }
 
@@ -982,7 +993,8 @@ app.post('/enviar-confirmaciones', async (req,res) => {
       if(r.ok){ bien++; } else { mal++; }
       const u8 = soloDigitos8(a.tel);
       if(u8) paraGuardar[u8] = true;
-      resultados.push({ nombre:a.nombre, tel:a.tel, ok:r.ok, error:r.error||null });
+      resultados.push({ nombre:a.nombre, tel:a.tel, ok:r.ok, error:r.error||null,
+                        id:r.id||null, estado:r.estado||null, respuesta:r.respuesta||null });
       await new Promise(ok=>setTimeout(ok, 120));  // respiro entre mensajes
     }
 
