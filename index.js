@@ -25,13 +25,26 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.2';
+const VERSION = 'etapa-4.3';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
    mira qué pasó. Para que las cancelaciones vuelvan a aplicarse solas, poner
    esto en false y volver a desplegar. Nada más. */
 const CANCELA_EN_CELESTE = true;
+
+/* MARCAR COMO LEÍDO EN WHATSAPP (el doble tilde azul).
+
+   Solo se marcan los mensajes que el agente RESOLVIÓ SOLO: las confirmaciones
+   que quedaron anotadas como verde. Todo lo demás —lo que va a celeste, lo que
+   no se entendió, lo que no se sabe de quién es— queda SIN LEER a propósito.
+
+   No es un adorno: es el aviso. Lo que quede sin leer en el celular de la
+   academia es exactamente la lista de lo que necesita que lo mire una persona.
+   Si se marcara todo, esa señal se pierde y no hay forma de saber qué falta.
+
+   Para apagarlo, poner esto en false y volver a desplegar. Nada más. */
+const MARCAR_LEIDO = true;
 
 import express from 'express';
 import crypto from 'crypto';
@@ -60,7 +73,7 @@ const TOPE_ENVIO_DIA  = 250;   // tope de Meta sin verificación de empresa
 const CUANTOS_GUARDA = 100;
 const registro = [];
 const arranque = new Date();
-const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, deOtro:0, cancelCeleste:0, resueltosCompartido:0, errores:0 };
+const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, deOtro:0, cancelCeleste:0, resueltosCompartido:0, leidos:0, leidosFallaron:0, errores:0 };
 
 /* ---------- QUÉ DÍA ES EN ASUNCIÓN ----------
    Este servidor vive en hora universal, que va adelante de Paraguay. Pidiéndole
@@ -858,6 +871,19 @@ app.post('/webhooks/whatsapp', (req,res) => {
             destinoSede:     _dp ? _dp.sede : null
           });
           totales.anotados += fila.anotado.length;
+
+          /* ---- MARCAR LEÍDO EN WHATSAPP ----
+             Solo acá, y solo si se dieron las TRES cosas:
+               1. quedó como confirmación (no se desvió a celeste),
+               2. se ubicó la clase —sin sede el calendario no pinta nada—, y
+               3. se escribió el renglón en la libreta.
+             Si falta cualquiera, el mensaje queda SIN LEER en el celular, que
+             es como se avisa que lo tiene que mirar una persona. */
+          if(fila.tipoLibreta === 'confirma' && fila.ubic && fila.ubic.ok && fila.anotado.length){
+            fila.leido = await marcarLeido(msg.id);
+            if(fila.leido.ok) totales.leidos++;
+            else totales.leidosFallaron++;
+          }
         }catch(e){ fila.errorAnotar = e.message; totales.errores++; }
       } else if(anotable){
         fila.noAnotado = 'no se sabe de quién es el mensaje';
@@ -882,6 +908,7 @@ app.get('/salud', (req,res) => {
              hoyEnAsuncion: hoyAsuncion(), horaEnAsuncion: horaAsuncion(),
              ultimoGuardadoDeLista: ULTIMO_GUARDADO,
              cancelacionesEnCeleste: CANCELA_EN_CELESTE,
+             marcaComoLeido: MARCAR_LEIDO,
              ...totales, guardados:registro.length,
              claveIA: !!CLAVE_IA, claveAgente: !!AGENTE_PASSWORD, claveKapso: !!KAPSO_API_KEY });
 });
@@ -931,6 +958,9 @@ app.get('/', (req,res) => {
       (r.anotado?'<div class="linea"><span class="et">En la libreta</span> <b style="color:#2ea043">✓ '+r.anotado.length+' renglón(es)</b> <span class="pin">'+esc(r.anotado.join(', ').slice(0,40))+'</span></div>':'')+
       (r.noAnotado?'<div class="linea"><span class="et">En la libreta</span> <span class="alerta">no se anotó — '+esc(r.noAnotado)+'</span></div>':'')+
       (r.errorAnotar?'<div class="linea"><span class="et">En la libreta</span> <span class="alerta">'+esc(r.errorAnotar)+'</span></div>':'')+
+      (r.leido?'<div class="linea"><span class="et">En WhatsApp</span> '+(r.leido.ok
+          ? '<b style="color:#2ea043">✓✓ marcado como leído</b>'
+          : '<span class="alerta">no se pudo marcar leído — '+esc(r.leido.error)+'</span>')+'</div>':'')+
       (r.habriaContestado?'<div class="linea"><span class="et">Habría contestado</span> <i>'+esc(r.habriaContestado)+'</i> <span class="pin">no se envió</span></div>':'')+
       '<details><summary>ver lo que mandó Kapso</summary><pre>'+esc(JSON.stringify(r.cuerpo,null,2))+'</pre></details>'+
     '</div>';
@@ -963,6 +993,7 @@ app.get('/', (req,res) => {
 '  <span class="num"><b>'+totales.clasificados+'</b>clasificados</span>'+
 '  <span class="num"><b>'+totales.sinAlumno+'</b>sin alumno</span>'+
 '  <span class="num"><b>'+totales.anotados+'</b>en la libreta</span>'+
+'  <span class="num"><b>'+totales.leidos+'</b>marcados leídos</span>'+
 '  <span class="num"><b>'+totales.errores+'</b>errores</span>'+
 '  <span class="num"><b>'+totales.firmaMal+'</b>firma inválida</span>'+
 '</div>'+
@@ -1009,6 +1040,27 @@ function telInternacional(t){
    está roto en el padrón: se marca como fallido y NO se manda a ciegas, para
    que aparezca en "los que fallaron" con nombre y se pueda corregir. */
 function telPlausible(d){ return d.length >= 8 && d.length <= 15; }
+
+/* ---------- MARCAR UN MENSAJE COMO LEÍDO (doble tilde azul) ----------
+
+   Va a la MISMA dirección que se usa para enviar. No manda ningún mensaje ni
+   gasta plata: solo le avisa a WhatsApp que ese mensaje ya fue leído.
+
+   Que esto falle NO puede romper nada: el renglón ya quedó anotado en la
+   libreta antes de llegar acá. Si falla, se cuenta y se sigue. */
+async function marcarLeido(idMensaje){
+  if(!MARCAR_LEIDO)     return { ok:false, error:'está apagado (MARCAR_LEIDO en false)' };
+  if(!KAPSO_API_KEY)    return { ok:false, error:'Falta KAPSO_API_KEY' };
+  if(!idMensaje)        return { ok:false, error:'el aviso no trajo identificador de mensaje' };
+  try{
+    const r = await fetch(KAPSO_URL, { method:'POST',
+      headers:{ 'Content-Type':'application/json', 'X-API-Key':KAPSO_API_KEY },
+      body: JSON.stringify({ messaging_product:'whatsapp', status:'read', message_id:idMensaje }) });
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok) return { ok:false, error:(d && d.error && (d.error.message||d.error)) || ('HTTP '+r.status) };
+    return { ok:true };
+  }catch(e){ return { ok:false, error:e.message }; }
+}
 
 async function enviarConfirmacion(destino, nombre, hora, sede, plantilla){
   if(!KAPSO_API_KEY) return { ok:false, error:'Falta KAPSO_API_KEY' };
