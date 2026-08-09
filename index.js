@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.1';
+const VERSION = 'etapa-4.2';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -219,13 +219,17 @@ function fechaMenosUn(diaISO){
    perder una confirmación es peor que gastar un token de más. */
 async function listaEnviados(hoy){
   if(_enviados.set && Date.now() < _enviados.hasta) return _enviados.set;
-  const set = new Set();
+  /* Un Map en vez de un Set: la clave sigue siendo el número, pero ahora el
+     valor trae el nombre del alumno al que le mandamos. Los días viejos tienen
+     guardado `true` en vez del nombre y siguen funcionando igual: .has() no
+     cambia, y el desempate por nombre simplemente no se activa para esos. */
+  const set = new Map();
   let ok = false;
   for(const f of [fechaMenosUn(hoy), hoy]){
     try{
       const obj = await leerFirebase('agente_v1/enviados/'+f);
       ok = true;
-      if(obj) Object.keys(obj).forEach(k => set.add(k));
+      if(obj) Object.keys(obj).forEach(k => set.set(k, obj[k]));
     }catch(e){}
   }
   if(!ok) return null;
@@ -326,11 +330,43 @@ async function quienEs(telefono, nombreContacto){
   if(cands.every(c => claveNombre(c.nombre) === clave0))
     return { encontrado:true, alumno:cands[0], candidatos:cands, mismaPersona:true };
 
+  const limpio = s => String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+                        .toLowerCase().replace(/\s+/g,' ').trim();
+  const enPedazos0 = s => limpio(s).replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(x => x.length >= 3);
+  /* ¿El nombre de pila de este alumno aparece en ese texto? Se usa dos veces:
+     contra el nombre de la confirmación que mandamos y contra el nombre del
+     contacto de WhatsApp. */
+  const apareceEn = (texto, cand) => {
+    const pedazos = enPedazos0(texto);
+    const suyas = enPedazos0(claveNombre(cand.nombre));
+    if(!suyas.length || !pedazos.length) return false;
+    const pila = suyas[0];
+    /* "Agos" tiene que alcanzar para "Agostina", pero nunca dos letras sueltas:
+       por eso el pedazo tiene que tener 4 o más para valer de arranque. */
+    return pedazos.some(w => w === pila
+      || (w.length >= 4 && pila.startsWith(w))
+      || (pila.length >= 4 && w.startsWith(pila)));
+  };
+
+  /* (2) A NOMBRE DE QUIÉN LE MANDAMOS LA CONFIRMACIÓN HOY. Es el dato más
+     fuerte que hay y estaba ahí sin usarse: el mensaje que llega es la
+     respuesta a esa confirmación. Si le escribimos a Agos, el que contesta
+     confirma por Agos, aunque el teléfono esté a nombre de la madre y aunque
+     la madre también sea alumna. Si le mandamos a los dos hermanos, no
+     desempata: ahí de verdad no se sabe. */
+  try{
+    const lista = await listaEnviados(hoyAsuncion());
+    const aQuien = lista ? lista.get(colaTel(telefono)) : null;
+    if(aQuien && typeof aQuien === 'string'){
+      const conNombre = cands.filter(c => apareceEn(aQuien, c));
+      if(conNombre.length === 1)
+        return { encontrado:true, alumno:conNombre[0], candidatos:cands, porLaConfirmacion:aQuien };
+    }
+  }catch(e){}
+
   /* Kapso manda el nombre con el que la academia tiene guardado el contacto.
      Si coincide con uno de los candidatos, resuelve el número compartido sin
      tener que preguntarle nada al alumno. */
-  const limpio = s => String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-                        .toLowerCase().replace(/\s+/g,' ').trim();
   if(nombreContacto){
     const porNombre = cands.find(c => limpio(c.nombre) === limpio(nombreContacto));
     if(porNombre) return { encontrado:true, alumno:porNombre, candidatos:cands, porNombreDelContacto:true };
@@ -342,19 +378,7 @@ async function quienEs(telefono, nombreContacto){
        Solo resuelve si lo cumple UN candidato y nada más: si el contacto dice
        "Lali Mama Patrick y Paul" y los dos hermanos son alumnos, sigue sin
        saberse quién escribió, y ahí no se adivina. */
-    const enPedazos = s => limpio(s).replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(x => x.length >= 3);
-    const delContacto = enPedazos(nombreContacto);
-    const tieneSuNombre = c => {
-      const suyas = enPedazos(claveNombre(c.nombre));
-      if(!suyas.length) return false;
-      const pila = suyas[0];
-      /* "Manu" tiene que alcanzar para "Manuel", pero nunca al revés con dos
-         letras: por eso el pedazo tiene que tener 4 o más para valer de arranque. */
-      return delContacto.some(w => w === pila
-        || (w.length >= 4 && pila.startsWith(w))
-        || (pila.length >= 4 && w.startsWith(pila)));
-    };
-    const conNombre = cands.filter(tieneSuNombre);
+    const conNombre = cands.filter(c => apareceEn(nombreContacto, c));
     if(conNombre.length === 1)
       return { encontrado:true, alumno:conNombre[0], candidatos:cands, porNombreDelContacto:true };
   }
@@ -392,6 +416,8 @@ REGLAS QUE NO SE ROMPEN
    - Dos que parecen afirmación y NO lo son, tratalas siempre como nada: "si puedo mañana" y "si puedo". El alumno está poniendo una condición, no confirmando.
 10. Una respuesta CORTA que solo expresa acuerdo, presencia o disposición a venir, y no trae ninguna otra información adentro, es confirma. Ejemplos: firme, firmeee, si firme, listo, ahí estoy, ahí estaré, tal cual, obvio, de una, va, dale ahí estoy. La mayoría de los mensajes que recibís son la respuesta a una pregunta que la academia ya hizo: "Entrenamos mañana a las 7:00?". Una respuesta corta y afirmativa a eso es una confirmación, aunque no diga la palabra "sí".
    Esta regla NO se aplica si el mensaje trae algo más adentro: una pregunta, una condición, una fecha o una hora distinta, una queja, o el nombre de otra persona. En esos casos vale lo que digan las reglas de arriba.
+
+10b. "ME VOY" ACÁ QUIERE DECIR QUE VIENE, NO QUE SE VA. En Paraguay "me voy" se usa como "voy para allá". "si me voy", "me voy nomás", "me voy profe", "ahí me voy" son CONFIRMA, no ausencia. Solo es ausencia cuando dice a dónde se va y ese lugar no es la clase: "me voy de viaje", "me voy a Buenos Aires", "me voy dos semanas".
 
 11. UN SALUDO, UN GRACIAS O UN EMOJI PEGADOS A UNA CONFIRMACIÓN NO LA ANULAN. Antes de decidir, limpiá el mensaje: sacá el saludo del principio ("hola", "holaa", "buen día", "buenas", "buenas tardes", "hola profe"), sacá el agradecimiento del final ("gracias", "muchas gracias", "gracias profe", "grax") y sacá los emojis. Después clasificá lo que queda. Ejemplos: "Hola ok" queda "ok" → confirma. "Ok 👍" queda "ok" → confirma. "Confirmado gracias" queda "confirmado" → confirma. "Gracias, ahí estoy" queda "ahí estoy" → confirma. "Holaaa si voy" queda "si voy" → confirma. "Buenas tardes, confirmado" queda "confirmado" → confirma. "Hola Sii" queda "Sii" → confirma. "Hola profe, si entrenamos mañana" queda "si entrenamos mañana" → confirma. El saludo, el gracias y el emoji solo mandan cuando son TODO el mensaje y no queda nada más después de sacarlos.
 
@@ -885,6 +911,7 @@ app.get('/', (req,res) => {
       ? '<b>'+esc(q.alumno.nombre)+'</b>'+(q.alumno.tipo?' · '+esc(q.alumno.tipo):'')+
         (q.porNombreDelContacto?' <span class="pin">resuelto por el nombre del contacto</span>':'')+
         (q.mismaPersona?' <span class="pin">varias fichas de la misma persona</span>':'')+
+        (q.porLaConfirmacion?' <span class="pin">le mandamos la confirmación a '+esc(q.porLaConfirmacion)+'</span>':'')+
         (q.porLaClase?' <span class="pin">resuelto por la clase del '+esc(q.fechaDesempate||'')+'</span>':'')
       : (q.varios
           ? '<span class="alerta">número compartido — '+q.candidatos.length+' candidatos:</span> '+esc(q.candidatos.map(x=>x.nombre).join(', '))+
@@ -1058,12 +1085,19 @@ app.post('/enviar-confirmaciones', async (req,res) => {
 
     const resultados = [];
     let bien = 0, mal = 0;
-    const paraGuardar = {};   // últimos 8 dígitos de cada número al que le mandamos
+    /* Se guarda el número Y EL NOMBRE del alumno al que le mandamos. El nombre
+       es lo que después desempata un número compartido: si a este teléfono le
+       mandamos la confirmación de Agos, el que contesta "si confirmo" está
+       confirmando por Agos, no por la madre. Antes se guardaba solo `true` y
+       ese dato se tiraba. Si al mismo número le mandamos dos —dos hermanos—
+       quedan los dos separados por "|" y entonces NO desempata nada, que es lo
+       correcto: ahí de verdad no se sabe quién contestó. */
+    const paraGuardar = {};   // últimos 8 dígitos -> nombre(s) a quien le mandamos
     for(const a of lista){
       const r = await enviarConfirmacion(a.tel, a.nombre, a.hora, a.sede, plantilla);
       if(r.ok){ bien++; } else { mal++; }
       const u8 = soloDigitos8(a.tel);
-      if(u8) paraGuardar[u8] = true;
+      if(u8) paraGuardar[u8] = paraGuardar[u8] ? paraGuardar[u8]+'|'+a.nombre : String(a.nombre||'');
       resultados.push({ nombre:a.nombre, tel:a.tel, ok:r.ok, error:r.error||null,
                         id:r.id||null, estado:r.estado||null, respuesta:r.respuesta||null });
       await new Promise(ok=>setTimeout(ok, 120));  // respiro entre mensajes
