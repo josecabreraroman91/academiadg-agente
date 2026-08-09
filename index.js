@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.0';
+const VERSION = 'etapa-4.1';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -60,7 +60,7 @@ const TOPE_ENVIO_DIA  = 250;   // tope de Meta sin verificación de empresa
 const CUANTOS_GUARDA = 100;
 const registro = [];
 const arranque = new Date();
-const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, deOtro:0, cancelCeleste:0, errores:0 };
+const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, deOtro:0, cancelCeleste:0, resueltosCompartido:0, errores:0 };
 
 /* ---------- QUÉ DÍA ES EN ASUNCIÓN ----------
    Este servidor vive en hora universal, que va adelante de Paraguay. Pidiéndole
@@ -315,6 +315,17 @@ async function quienEs(telefono, nombreContacto){
   if(cands.length === 0) return { encontrado:false, candidatos:[] };
   if(cands.length === 1) return { encontrado:true, alumno:cands[0], candidatos:cands };
 
+  /* (1) NO TODO NÚMERO CON VARIOS CANDIDATOS ES UN NÚMERO COMPARTIDO.
+     Un mismo alumno puede tener DOS FICHAS en el padrón: "Rodrigo Trinidad
+     INDIVIDUAL" y "Rodrigo Trinidad DUAL", o "Alex Ebner GRUPAL" y "Alex Ebner
+     INDIVIDUAL". Ahí no hay ninguna duda de quién escribió: es la misma
+     persona. Se frenaba igual, y el 9/8 se perdieron confirmaciones por eso.
+     claveNombre() ya saca grupal/individual/dual/ind y la sede: si todos los
+     candidatos quedan con la misma clave, es uno solo. */
+  const clave0 = claveNombre(cands[0].nombre);
+  if(cands.every(c => claveNombre(c.nombre) === clave0))
+    return { encontrado:true, alumno:cands[0], candidatos:cands, mismaPersona:true };
+
   /* Kapso manda el nombre con el que la academia tiene guardado el contacto.
      Si coincide con uno de los candidatos, resuelve el número compartido sin
      tener que preguntarle nada al alumno. */
@@ -323,6 +334,29 @@ async function quienEs(telefono, nombreContacto){
   if(nombreContacto){
     const porNombre = cands.find(c => limpio(c.nombre) === limpio(nombreContacto));
     if(porNombre) return { encontrado:true, alumno:porNombre, candidatos:cands, porNombreDelContacto:true };
+
+    /* (2) LA COINCIDENCIA EXACTA CASI NUNCA PASA. Los contactos están guardados
+       como "Alex Singer Papá Eitan" o "Flor Crespi Mamá Manu": el nombre del
+       alumno está adentro, pero el texto entero no coincide con nada. Así que
+       se busca el NOMBRE DE PILA del alumno dentro del nombre del contacto.
+       Solo resuelve si lo cumple UN candidato y nada más: si el contacto dice
+       "Lali Mama Patrick y Paul" y los dos hermanos son alumnos, sigue sin
+       saberse quién escribió, y ahí no se adivina. */
+    const enPedazos = s => limpio(s).replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(x => x.length >= 3);
+    const delContacto = enPedazos(nombreContacto);
+    const tieneSuNombre = c => {
+      const suyas = enPedazos(claveNombre(c.nombre));
+      if(!suyas.length) return false;
+      const pila = suyas[0];
+      /* "Manu" tiene que alcanzar para "Manuel", pero nunca al revés con dos
+         letras: por eso el pedazo tiene que tener 4 o más para valer de arranque. */
+      return delContacto.some(w => w === pila
+        || (w.length >= 4 && pila.startsWith(w))
+        || (pila.length >= 4 && w.startsWith(pila)));
+    };
+    const conNombre = cands.filter(tieneSuNombre);
+    if(conNombre.length === 1)
+      return { encontrado:true, alumno:conNombre[0], candidatos:cands, porNombreDelContacto:true };
   }
   return { encontrado:false, varios:true, candidatos:cands };
 }
@@ -663,6 +697,40 @@ app.post('/webhooks/whatsapp', (req,res) => {
          nombre no lo puede aplicar nadie. */
       const t = fila.clasi && fila.clasi.tipo;
       const anotable = t && t !== 'nada';
+
+      /* (3) ÚLTIMO DESEMPATE PARA UN NÚMERO COMPARTIDO DE VERDAD: la grilla.
+         Si de los dos hermanos que comparten el teléfono uno solo tiene clase
+         el día por el que se preguntó, el que contestó "dale" fue ese.
+
+         SOLO PARA CONFIRMACIONES, y a propósito. Una confirmación pinta verde
+         y no saca a nadie: si se marcara al hermano equivocado, el costo es un
+         color mal puesto. Una cancelación saca de la grilla, y ahí equivocarse
+         cuesta una clase mal cobrada. Marcar de menos cuesta un clic.
+
+         Tampoco se desempata si el mensaje habla de otra persona: ahí ni
+         siquiera se sabe de quién se está hablando. */
+      if(t === 'confirma' && fila.quien && fila.quien.varios && !fila.clasi.sobreOtraPersona){
+        try{
+          const hoyD = hoyAsuncion();
+          const fechaMira = fila.clasi.fecha || sumarDias(hoyD,1);
+          const conClase = [];
+          for(const c of fila.quien.candidatos){
+            const u = await ubicarClase(c.nombre, fechaMira);
+            if(u.ok) conClase.push(c);
+          }
+          if(conClase.length === 1){
+            fila.quien = { encontrado:true, alumno:conClase[0],
+                           candidatos:fila.quien.candidatos, porLaClase:true, fechaDesempate:fechaMira };
+            totales.resueltosCompartido = (totales.resueltosCompartido||0) + 1;
+            if(totales.sinAlumno > 0) totales.sinAlumno--;
+          } else {
+            fila.notaCompartido = conClase.length === 0
+              ? 'ninguno de los candidatos tiene clase el '+fechaMira
+              : 'más de uno tiene clase el '+fechaMira+' — no se adivina';
+          }
+        }catch(e){ fila.errorDesempate = e.message; }
+      }
+
       if(anotable && fila.quien && fila.quien.encontrado){
         try{
           if(t === 'cancela'){
@@ -815,9 +883,12 @@ app.get('/', (req,res) => {
     const c = r.clasi || {};
     const quienTxt = q.encontrado
       ? '<b>'+esc(q.alumno.nombre)+'</b>'+(q.alumno.tipo?' · '+esc(q.alumno.tipo):'')+
-        (q.porNombreDelContacto?' <span class="pin">resuelto por el nombre del contacto</span>':'')
+        (q.porNombreDelContacto?' <span class="pin">resuelto por el nombre del contacto</span>':'')+
+        (q.mismaPersona?' <span class="pin">varias fichas de la misma persona</span>':'')+
+        (q.porLaClase?' <span class="pin">resuelto por la clase del '+esc(q.fechaDesempate||'')+'</span>':'')
       : (q.varios
-          ? '<span class="alerta">número compartido — '+q.candidatos.length+' candidatos:</span> '+esc(q.candidatos.map(x=>x.nombre).join(', '))
+          ? '<span class="alerta">número compartido — '+q.candidatos.length+' candidatos:</span> '+esc(q.candidatos.map(x=>x.nombre).join(', '))+
+            (r.notaCompartido?'<div class="por">'+esc(r.notaCompartido)+'</div>':'')
           : '<span class="alerta">no está en el padrón</span>');
     return '<div class="f" style="border-left-color:'+(COLOR[c.tipo]||'#30363d')+'">'+
       '<div class="c">'+esc(new Date(r.cuando).toLocaleString('es-PY'))+' · '+esc(r.msg.tel)+'</div>'+
