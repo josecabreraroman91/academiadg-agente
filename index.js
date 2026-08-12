@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.5';
+const VERSION = 'etapa-4.6';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -777,7 +777,22 @@ app.post('/webhooks/whatsapp', (req,res) => {
       if(anotable && fila.quien && fila.quien.encontrado){
         try{
           if(t === 'cancela'){
-            fila.ubic = await ubicarClase(fila.quien.alumno.nombre, fila.clasi.fecha);
+            /* Un "no va" muchas veces no trae fecha ("no va piero", "hoy no
+               llega"): se avisa por la pregunta de MAÑANA. Si el alumno no dijo
+               el día, se busca la clase de MAÑANA y, si no tiene, la de HOY —
+               igual que el confirma. Sin esto, el aviso quedaba sin celda y el
+               calendario no podía sacarle el verde a alguien ya confirmado
+               (caso del falso presente). */
+            const hoy = hoyAsuncion();
+            if(fila.clasi.fecha){
+              fila.ubic = await ubicarClase(fila.quien.alumno.nombre, fila.clasi.fecha);
+            } else {
+              fila.ubic = await ubicarClase(fila.quien.alumno.nombre, sumarDias(hoy,1));
+              if(!fila.ubic.ok){
+                const ubicHoy = await ubicarClase(fila.quien.alumno.nombre, hoy);
+                if(ubicHoy.ok) fila.ubic = ubicHoy;
+              }
+            }
           } else if(t === 'confirma'){
             /* UNA CONFIRMACIÓN CASI NUNCA TRAE FECHA.
                El alumno contesta "dale" o "si firme" a la pregunta diaria, y esa
