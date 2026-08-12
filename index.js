@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.4';
+const VERSION = 'etapa-4.5';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -462,6 +462,7 @@ Ante la duda, true. Marcarlo de más solo hace que una persona lo mire; marcarlo
 de menos le saca la clase a quien no correspondía.
 
 LA FECHA
+UNA CONFIRMACIÓN CASI NUNCA LLEVA FECHA. Si el mensaje es un confirma y el alumno NO nombra un día concreto para su clase, dejá la fecha VACÍA. NUNCA pongas la fecha de HOY "por defecto": el sistema ya sabe buscar la clase de mañana solo. "confirmo", "confirmo mi clase", "confirmo 17 hrs", "dale", "ahí estoy" → fecha VACÍA. Solo poné fecha en un confirma si el alumno dice explícitamente otro día ("confirmo para el sábado").
 Se te dice abajo qué día es hoy. Convertí lo que dice el alumno en una fecha concreta:
 - "hoy" = esa fecha · "mañana" = esa fecha más un día
 - "el jueves" = el próximo jueves a partir de hoy
@@ -490,7 +491,7 @@ async function clasificar(texto, hoy){
           properties:{
             tipo:   { type:'string', enum:['confirma','cancela','pedido','ausencia','nada'] },
             sobreOtraPersona: { type:'boolean', description:'true si el mensaje habla de otra persona además de o en vez de quien escribe, o si habla en plural. Ante la duda, true.' },
-            fecha:  { type:'string', description:'AAAA-MM-DD de la clase, solo si es inequívoco. Si no, vacío.' },
+            fecha:  { type:'string', description:'AAAA-MM-DD de la clase SOLO si el alumno nombra un día concreto. En una confirmación sin día nombrado, VACÍO. Nunca uses la fecha de hoy por defecto.' },
             hasta:  { type:'string', description:'Para ausencias, hasta cuándo. Solo si el alumno lo dijo.' },
             motivo: { type:'string', enum:['lesion','viaje','otro',''] },
             porque: { type:'string', description:'En una línea, por qué elegiste ese tipo.' }
