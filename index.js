@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.3';
+const VERSION = 'etapa-4.4';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -410,7 +410,7 @@ Tu trabajo es LEER el mensaje de un alumno y decidir de qué se trata. No invent
 
 confirma — dice que viene a su clase. Ejemplos: sí, si, dale, ok, oka, okey, listo, confirmado, confirmo, presente, ahí estoy, ahí estaré, firme, si firme, va, de una, tal cual, obvio, siii
 cancela — avisa que NO viene a una clase puntual. Ejemplos: mañana no puedo, hoy no llego
-pedido — quiere cambiar de día u horario, o pregunta si hay lugar. Ejemplos: puedo cambiar al jueves?, tenés lugar a las 16?
+pedido — quiere cambiar de día u horario, pregunta si hay lugar, o avisa que en vez de la clase ofrecida viene OTRO día más adelante. Ejemplos: puedo cambiar al jueves?, tenés lugar a las 16?, me uno el próximo miércoles, arranco la semana que viene, esta semana no pero la que viene sí, mejor lo dejamos para el viernes, esta no voy, retomo la próxima
 ausencia — se va por un período, no por una clase. Ejemplos: me lesioné, no entreno dos semanas; me voy de viaje, vuelvo el 10
 nada — cualquier otra cosa: un saludo suelto, un agradecimiento, una consulta de precios, un reclamo, un audio, una foto, un sticker, o algo que no entendés con certeza.
 
@@ -434,11 +434,13 @@ REGLAS QUE NO SE ROMPEN
 
 11. UN SALUDO, UN GRACIAS O UN EMOJI PEGADOS A UNA CONFIRMACIÓN NO LA ANULAN. Antes de decidir, limpiá el mensaje: sacá el saludo del principio ("hola", "holaa", "buen día", "buenas", "buenas tardes", "hola profe"), sacá el agradecimiento del final ("gracias", "muchas gracias", "gracias profe", "grax") y sacá los emojis. Después clasificá lo que queda. Ejemplos: "Hola ok" queda "ok" → confirma. "Ok 👍" queda "ok" → confirma. "Confirmado gracias" queda "confirmado" → confirma. "Gracias, ahí estoy" queda "ahí estoy" → confirma. "Holaaa si voy" queda "si voy" → confirma. "Buenas tardes, confirmado" queda "confirmado" → confirma. "Hola Sii" queda "Sii" → confirma. "Hola profe, si entrenamos mañana" queda "si entrenamos mañana" → confirma. El saludo, el gracias y el emoji solo mandan cuando son TODO el mensaje y no queda nada más después de sacarlos.
 
+12. UNA NOTA SOBRE EL PAGO NO ES UNA CONDICIÓN PARA VENIR. Muchos alumnos confirman y de paso avisan cuándo van a pagar. Eso es un aviso aparte, NO una condición sobre si vienen. Frases de pago —"apenas pueda paso la transferencia", "ya te transfiero", "mañana te paso la plata", "te paso el comprobante", "el lunes te deposito", "apenas me pase Lili te paso"— se SACAN del mensaje y clasificás lo que queda. Ejemplos: "confirmo mi clase, apenas pueda paso la transferencia" queda "confirmo mi clase" → confirma. "Si voy, después te transfiero" queda "si voy" → confirma. "Ahí estoy, mañana te paso la plata" queda "ahí estoy" → confirma. El "apenas/cuando pueda" acá cuelga del PAGO, no de la clase: no lo trates como "si puedo".
+
 LO QUE SIGUE SIENDO NADA
 - Un saludo que es TODO el mensaje, sin nada más al lado: "hola", "holaa", "buen día", "buenas". Si después del saludo hay una confirmación, mandá la confirmación (regla 11).
 - Un agradecimiento que es TODO el mensaje: "gracias", "muchas gracias". Si el gracias viene pegado a una confirmación, mandá la confirmación (regla 11).
 - Una pregunta de hora o de lugar: "a qué hora?", "dónde?", "a qué hora y en dónde", "los sábados hasta qué hora?".
-- Una confirmación con una condición o una duda pegada: "si llueve no voy", "si hay lugar", "te aviso a la mañana", "creo que no llego", "te puedo avisar en un rato?", "si puedo mañana".
+- Una confirmación con una condición o una duda pegada QUE AFECTA SI VIENE: "si llueve no voy", "si hay lugar", "te aviso a la mañana", "creo que no llego", "te puedo avisar en un rato?", "si puedo mañana". (Ojo: una nota sobre el PAGO no cuenta como condición — ver regla 12.)
 - Un emoji, un sticker, un audio, una foto o un documento que sean TODO el mensaje. Si el emoji acompaña a una palabra de confirmación, mandá la confirmación (regla 11). Y si el emoji solo es un pulgar arriba o un visto, mandá la regla 2: eso es confirma.
 
 DE QUIÉN HABLA EL MENSAJE
@@ -464,6 +466,7 @@ Se te dice abajo qué día es hoy. Convertí lo que dice el alumno en una fecha 
 - "hoy" = esa fecha · "mañana" = esa fecha más un día
 - "el jueves" = el próximo jueves a partir de hoy
 - "la semana que viene", "en unos días" son vagos: dejá la fecha vacía
+- UNA DESPEDIDA NO ES LA FECHA DE LA CLASE. "hasta mañana", "nos vemos mañana", "hasta el jueves", "nos vemos" son un saludo de despedida, no dicen qué día entrena. No saques una fecha de ahí. En una confirmación, poné fecha SOLO si el alumno dice explícitamente qué día es su clase; si solo se despide, dejá la fecha vacía (así se busca la clase de mañana, que es por la que se preguntó).
 Nunca uses una fecha de tu memoria. Si es vago, vacío.`;
 
 async function clasificar(texto, hoy){
