@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.6';
+const VERSION = 'etapa-4.7';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -1138,6 +1138,38 @@ async function enviarConfirmacion(destino, nombre, hora, sede, plantilla){
    Protegida con la contraseña del agente, igual que las demás.
    Frena si son más de 250 (tope de Meta) — salvo que se pase forzar=1.
    ============================================================ */
+/* ---------- COLAPSAR HORAS SEGUIDAS ----------
+   Un alumno que entrena dos horas seguidas en la misma sede es UNA venida, no
+   dos: no hay que mandarle dos (o tres, o cuatro) confirmaciones — así llegaban
+   varios mensajes y el alumno se confundía. Se agrupa por número + nombre +
+   sede y, dentro de cada grupo, se deja SOLO la hora de inicio de cada bloque de
+   horas consecutivas. Las horas SEPARADAS (una a la mañana y otra a la tarde) NO
+   se tocan: son dos venidas distintas. Y si el nombre viene distinto ("Rodri"
+   vs "Rodrigo"), NO se juntan a propósito: preferimos mandar dos antes que
+   callar la confirmación de otra persona. */
+function colapsarHorasSeguidas(lista){
+  const horaNum = h => { const m = String(h||'').match(/(\d{1,2})/); return m ? parseInt(m[1],10) : NaN; };
+  const grupos = new Map(), orden = [];
+  lista.forEach(a => {
+    const key = colaTel(a.tel)+'|'+claveNombre(a.nombre)+'|'+String(a.sede||'').toLowerCase().trim();
+    if(!grupos.has(key)){ grupos.set(key, []); orden.push(key); }
+    grupos.get(key).push({ a, h: horaNum(a.hora) });
+  });
+  const salida = [];
+  for(const key of orden){
+    const items = grupos.get(key);
+    /* Un solo item, o alguna hora ilegible: no se toca, pasa tal cual. */
+    if(items.length === 1 || items.some(x => isNaN(x.h))){ items.forEach(x => salida.push(x.a)); continue; }
+    items.sort((x,y) => x.h - y.h);
+    let runStart = 0;
+    for(let k=0;k<items.length;k++){
+      const finDeRun = k===items.length-1 || items[k+1].h !== items[k].h+1;
+      if(finDeRun){ salida.push(items[runStart].a); runStart = k+1; }
+    }
+  }
+  return salida;
+}
+
 app.post('/enviar-confirmaciones', async (req,res) => {
   try{
     const clave = (req.body && req.body.clave) || req.query.clave || '';
@@ -1145,9 +1177,13 @@ app.post('/enviar-confirmaciones', async (req,res) => {
       return res.status(401).json({ ok:false, error:'clave incorrecta' });
 
     const plantilla = (req.body && req.body.plantilla) || req.query.plantilla || 'semana';
-    const lista = (req.body && req.body.alumnos) || [];
-    if(!Array.isArray(lista) || !lista.length)
+    const listaCruda = (req.body && req.body.alumnos) || [];
+    if(!Array.isArray(listaCruda) || !listaCruda.length)
       return res.status(400).json({ ok:false, error:'no vino ningún alumno' });
+
+    /* Horas seguidas del mismo alumno/sede = UNA venida: se manda una sola. */
+    const lista = colapsarHorasSeguidas(listaCruda);
+    const colapsados = listaCruda.length - lista.length;
 
     const forzar = String((req.body && req.body.forzar) || req.query.forzar || '') === '1';
     if(lista.length > TOPE_ENVIO_DIA && !forzar)
@@ -1188,7 +1224,7 @@ app.post('/enviar-confirmaciones', async (req,res) => {
       ULTIMO_GUARDADO = { ok:false, cuando:new Date().toISOString(), error:e.message };
     }
 
-    res.json({ ok:true, total:lista.length, bien, mal, guardadoLista, resultados });
+    res.json({ ok:true, total:lista.length, colapsados, bien, mal, guardadoLista, resultados });
   }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
 });
 
