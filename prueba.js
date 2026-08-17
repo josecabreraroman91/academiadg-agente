@@ -23,7 +23,8 @@ try{
 }catch(e){ /* sin .env: se saltean las pruebas del clasificador */ }
 
 process.env.SIN_SERVIDOR = '1';   // importar sin levantar el puerto
-const { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, VERSION } = await import('./index.js');
+const { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, VERSION,
+        diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba } = await import('./index.js');
 
 let pass=0, fail=0; const fails=[];
 const ok = (name, cond, extra) => { if(cond) pass++; else { fail++; fails.push(name + (extra?' — '+extra:'')); } };
@@ -61,6 +62,37 @@ ok('pedido sin fecha destino → celeste',
 
 ok('sumarDias +1', sumarDias('2026-08-17',1) === '2026-08-18');
 ok('sumarDias cruza el mes', sumarDias('2026-08-31',1) === '2026-09-01');
+
+/* Arreglo 3 — fechas y fallback a la grilla SEMANA */
+ok('diaDeFecha 2026-08-18 = MARTES', diaDeFecha('2026-08-18') === 'MARTES');
+ok('diaDeFecha 2026-08-23 = DOMINGO', diaDeFecha('2026-08-23') === 'DOMINGO');
+ok('diasEntreISO lunes→martes = 1', diasEntreISO('2026-08-17','2026-08-18') === 1);
+ok('diasEntreISO cruza mes', diasEntreISO('2026-08-31','2026-09-02') === 2);
+
+/* Cargo un calendario de prueba (sin tocar Firebase) y verifico la ubicación en SEMANA */
+_cacheCalendarioPrueba({
+  lunes: '2026-08-17',
+  sedesPorDia: { MARTES: [ {key:'lomas', profes:['JM','VA']}, {key:'elite', profes:['RS','ChG']} ] },
+  semana: {
+    'MARTES|lomas|0|9|1': { nombre:'Eleonora Scavone' },
+    'MARTES|elite|0|2|0': { nombre:'Veronica Valdiglesias' },
+    'LUNES|lomas|1|0|0':  { nombre:'Otro Alumno' },
+  },
+  semanaProxima: { 'MARTES|lomas|1|3|0': { nombre:'Prox Semana' } },
+});
+const uEle = await ubicarEnSemana('Eleonora Scavone', '2026-08-18');
+ok('SEMANA ubica a Eleonora (lomas, hora 9, profe JM)',
+   uEle.length===1 && uEle[0].sede==='lomas' && uEle[0].horaIdx===9 && uEle[0].profe==='JM',
+   JSON.stringify(uEle));
+const uVer = await ubicarEnSemana('Veronica Valdiglesias', '2026-08-18');
+ok('SEMANA ubica a Veronica (elite, hora 2, profe RS)',
+   uVer.length===1 && uVer[0].sede==='elite' && uVer[0].horaIdx===2 && uVer[0].profe==='RS',
+   JSON.stringify(uVer));
+ok('SEMANA no ubica a quien no está', (await ubicarEnSemana('Nadie X', '2026-08-18')).length===0);
+ok('SEMANA no ubica en DOMINGO', (await ubicarEnSemana('Eleonora Scavone', '2026-08-23')).length===0);
+const uProx = await ubicarEnSemana('Prox Semana', '2026-08-25');   // martes de la semana que viene
+ok('SEMANA usa semanaProxima (7-12 días)', uProx.length===1 && uProx[0].sede==='lomas', JSON.stringify(uProx));
+ok('SEMANA no ubica fuera de las 2 semanas cargadas', (await ubicarEnSemana('Eleonora Scavone', '2026-09-30')).length===0);
 
 /* ---------- 2. CLASIFICADOR (necesita ANTHROPIC_API_KEY) ---------- */
 const CASOS = [

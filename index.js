@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.8';
+const VERSION = 'etapa-4.9';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -546,6 +546,79 @@ function claveNombre(s){
   return t.replace(/\.+$/,'').trim();
 }
 
+/* ============================================================
+   FALLBACK: BUSCAR EN LA GRILLA "SEMANA"
+
+   El agente ubica en dia/{fecha}, que es la copia del día que publica el
+   calendario/tablet. Pero esa copia se llena TARDE (cuando alguien abre o
+   publica el día). La confirmación en cambio se manda desde la grilla SEMANA,
+   que ya está lista. Resultado medido: un alumno que contesta "dale" a la
+   pregunta de mañana ANTES de que mañana esté publicado en dia/ no se ubicaba,
+   y la confirmación no pintaba verde aunque estaba bien clasificada.
+
+   Este fallback mira `calendario_v2/semana` (o `semanaProxima`), mapeando la
+   fecha a su día de la semana y a las celdas DIA|sede|pi|hi|si. Solo LEE.
+   ============================================================ */
+const DIAS_SEMANA = ['DOMINGO','LUNES','MARTES','MIERCOLES','JUEVES','VIERNES','SABADO'];
+
+function diaDeFecha(fecha){
+  const p = String(fecha||'').split('-').map(Number);
+  if(p.length !== 3 || !p[0]) return null;
+  const d = new Date(Date.UTC(p[0], p[1]-1, p[2]));
+  if(isNaN(d.getTime())) return null;
+  return DIAS_SEMANA[d.getUTCDay()];      // 0 = DOMINGO
+}
+function diasEntreISO(desde, hasta){
+  const a = String(desde||'').split('-').map(Number);
+  const b = String(hasta||'').split('-').map(Number);
+  if(a.length!==3 || b.length!==3 || !a[0] || !b[0]) return NaN;
+  return Math.round((Date.UTC(b[0],b[1]-1,b[2]) - Date.UTC(a[0],a[1]-1,a[2])) / 86400000);
+}
+
+let _cal = null, _calTs = 0;
+async function leerCalendario(){
+  if(_cal && Date.now()-_calTs < 90*1000) return _cal;
+  const [lunes, sedesPorDia, semana, semanaProxima] = await Promise.all([
+    leerFirebase('calendario_v2/lunesActual').catch(()=>null),
+    leerFirebase('calendario_v2/sedesPorDia').catch(()=>null),
+    leerFirebase('calendario_v2/semana/alumnos').catch(()=>null),
+    leerFirebase('calendario_v2/semanaProxima/alumnos').catch(()=>null),
+  ]);
+  _cal = { lunes: lunes||'', sedesPorDia: sedesPorDia||{}, semana: semana||{}, semanaProxima: semanaProxima||{} };
+  _calTs = Date.now();
+  return _cal;
+}
+
+async function ubicarEnSemana(nombreAlumno, fecha){
+  try{
+    const cal = await leerCalendario();
+    if(!cal.lunes) return [];
+    const dia = diaDeFecha(fecha);
+    if(!dia || dia === 'DOMINGO') return [];        // no hay clases el domingo
+    const off = diasEntreISO(cal.lunes, fecha);
+    let alumnos;
+    if(off >= 0 && off <= 5)       alumnos = cal.semana;          // esta semana
+    else if(off >= 7 && off <= 12) alumnos = cal.semanaProxima;   // la que viene
+    else return [];                                               // fuera de las semanas cargadas
+    if(!alumnos) return [];
+    const cols = cal.sedesPorDia[dia] || [];
+    const buscado = claveNombre(nombreAlumno);
+    const found = [];
+    for(const k of Object.keys(alumnos)){
+      if(k.indexOf(dia+'|') !== 0) continue;         // clave = DIA|sedeKey|pi|hi|si
+      const al = alumnos[k];
+      if(!al || !al.nombre) continue;
+      if(claveNombre(al.nombre) !== buscado) continue;
+      const parts = k.split('|');
+      const sedeKey = parts[1], pi = Number(parts[2]), hi = Number(parts[3]);
+      const sedeObj = Array.isArray(cols) ? cols.find(s => s && s.key === sedeKey) : null;
+      const profe = (sedeObj && sedeObj.profes && sedeObj.profes[pi]) || '';
+      found.push({ sede: sedeKey, diaKey:'', horaIdx: hi, profe, nombreEnGrilla: al.nombre });
+    }
+    return found;
+  }catch(e){ return []; }
+}
+
 async function ubicarClase(nombreAlumno, fecha){
   if(!fecha) return { ok:false, motivo:'el mensaje no dijo de qué día' };
   const buscado = claveNombre(nombreAlumno);
@@ -561,6 +634,14 @@ async function ubicarClase(nombreAlumno, fecha){
       if(claveNombre(r.nombre) !== buscado) continue;
       encontradas.push({ sede, diaKey:k, horaIdx:r.horaIdx, profe:r.profe||'', nombreEnGrilla:r.nombre });
     }
+  }
+
+  /* FALLBACK: si dia/{fecha} todavía no tiene al alumno (no se publicó aún), se
+     busca en la grilla SEMANA, que es de donde salió la confirmación. Así una
+     confirmación que llega antes de que se publique el día igual pinta verde. */
+  if(encontradas.length === 0){
+    const enSem = await ubicarEnSemana(nombreAlumno, fecha);
+    for(const c of enSem) encontradas.push(c);
   }
 
   if(encontradas.length === 0) return { ok:false, motivo:'no estaba en el día '+fecha };
@@ -1277,5 +1358,8 @@ if(!process.env.SIN_SERVIDOR){
 }
 
 /* Exportadas para la suite de pruebas (prueba.js). No cambian nada del server. */
-export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION };
+/* Solo para prueba.js: siembra el cache del calendario con datos controlados,
+   así se puede testear ubicarEnSemana sin tocar Firebase. */
+function _cacheCalendarioPrueba(cal){ _cal = cal; _calTs = Date.now(); }
+export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba };
 export default app;
