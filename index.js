@@ -1059,6 +1059,22 @@ app.get('/probar', async (req,res) => {
   }catch(e){ res.status(500).json({ texto, error:e.message }); }
 });
 
+/* Diagnóstico: ¿el agente puede LEER la grilla del calendario? Devuelve solo
+   contadores (no expone el horario de nadie). Sirve para confirmar que el
+   fallback de ubicación por la grilla SEMANA va a funcionar. */
+app.get('/diag-cal', async (req,res) => {
+  try{
+    const cal = await leerCalendario();
+    res.json({
+      puedeLeerCalendario: !!cal.lunes,
+      lunesActual: cal.lunes,
+      cuantosEnSemana: Object.keys(cal.semana||{}).length,
+      cuantosEnProxima: Object.keys(cal.semanaProxima||{}).length,
+      dias: Object.keys(cal.sedesPorDia||{})
+    });
+  }catch(e){ res.json({ puedeLeerCalendario:false, error:e.message }); }
+});
+
 /* ---------- La pantalla ---------- */
 app.get('/', (req,res) => {
   const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
