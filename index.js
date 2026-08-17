@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.7';
+const VERSION = 'etapa-4.8';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -408,8 +408,8 @@ async function quienEs(telefono, nombreContacto){
 const REGLAS = `Sos el asistente de Academia DG, una academia de pádel en Asunción con tres sedes: Lomas, Elite y Segurola.
 Tu trabajo es LEER el mensaje de un alumno y decidir de qué se trata. No inventes datos. No resuelvas nada.
 
-confirma — dice que viene a su clase. Ejemplos: sí, si, dale, ok, oka, okey, listo, confirmado, confirmo, presente, ahí estoy, ahí estaré, firme, si firme, va, de una, tal cual, obvio, siii
-cancela — avisa que NO viene a una clase puntual. Ejemplos: mañana no puedo, hoy no llego
+confirma — dice que viene a su clase. Ejemplos: sí, si, dale, ok, oka, okey, listo, confirmado, confirmo, presente, ahí estoy, ahí estaré, estoy, firme, si firme, va, de una, tal cual, obvio, siii, full, super, súper, nos vemos, nos vemos ahí, ahí nos vemos
+cancela — avisa que NO viene a una clase puntual. Ejemplos: mañana no puedo, hoy no llego, no, no no, nop, hoy no, mañana no
 pedido — quiere cambiar de día u horario, pregunta si hay lugar, o avisa que en vez de la clase ofrecida viene OTRO día más adelante. Ejemplos: puedo cambiar al jueves?, tenés lugar a las 16?, me uno el próximo miércoles, arranco la semana que viene, esta semana no pero la que viene sí, mejor lo dejamos para el viernes, esta no voy, retomo la próxima
 ausencia — se va por un período, no por una clase. Ejemplos: me lesioné, no entreno dos semanas; me voy de viaje, vuelvo el 10
 nada — cualquier otra cosa: un saludo suelto, un agradecimiento, una consulta de precios, un reclamo, un audio, una foto, un sticker, o algo que no entendés con certeza.
@@ -427,7 +427,7 @@ REGLAS QUE NO SE ROMPEN
    - Si lo que queda se sostiene solo como una afirmación de que viene, es confirma: "si voy" queda "voy" → confirma. "si entrenamos mañana" queda "entrenamos mañana" → confirma. "si estoy" queda "estoy" → confirma. "si confirmado" queda "confirmado" → confirma. "si llego" queda "llego" → confirma.
    - Si lo que queda queda colgado esperando un final, o es una condición, es nada: "si llueve no voy" → nada. "si hay lugar" → nada. "si es que puedo" → nada. "si no llueve" → nada.
    - Dos que parecen afirmación y NO lo son, tratalas siempre como nada: "si puedo mañana" y "si puedo". El alumno está poniendo una condición, no confirmando.
-10. Una respuesta CORTA que solo expresa acuerdo, presencia o disposición a venir, y no trae ninguna otra información adentro, es confirma. Ejemplos: firme, firmeee, si firme, listo, ahí estoy, ahí estaré, tal cual, obvio, de una, va, dale ahí estoy. La mayoría de los mensajes que recibís son la respuesta a una pregunta que la academia ya hizo: "Entrenamos mañana a las 7:00?". Una respuesta corta y afirmativa a eso es una confirmación, aunque no diga la palabra "sí".
+10. Una respuesta CORTA que solo expresa acuerdo, presencia o disposición a venir, y no trae ninguna otra información adentro, es confirma. Ejemplos: firme, firmeee, si firme, listo, ahí estoy, ahí estaré, estoy, tal cual, obvio, de una, va, full, super, súper, nos vemos, ahí nos vemos, dale ahí estoy. La mayoría de los mensajes que recibís son la respuesta a una pregunta que la academia ya hizo: "Entrenamos mañana a las 7:00?". Una respuesta corta y afirmativa a eso es una confirmación, aunque no diga la palabra "sí". Acá "full" y "super/súper" quieren decir "de una, dale"; "estoy" quiere decir "ahí estoy"; "nos vemos" quiere decir "ahí voy, nos vemos en la clase" — todas son confirma. ("nos vemos" es confirma pero NUNCA fija una fecha; ver LA FECHA.)
    Esta regla NO se aplica si el mensaje trae algo más adentro: una pregunta, una condición, una fecha o una hora distinta, una queja, o el nombre de otra persona. En esos casos vale lo que digan las reglas de arriba.
 
 10b. "ME VOY" ACÁ QUIERE DECIR QUE VIENE, NO QUE SE VA. En Paraguay "me voy" se usa como "voy para allá". "si me voy", "me voy nomás", "me voy profe", "ahí me voy" son CONFIRMA, no ausencia. Solo es ausencia cuando dice a dónde se va y ese lugar no es la clase: "me voy de viaje", "me voy a Buenos Aires", "me voy dos semanas".
@@ -435,6 +435,8 @@ REGLAS QUE NO SE ROMPEN
 11. UN SALUDO, UN GRACIAS O UN EMOJI PEGADOS A UNA CONFIRMACIÓN NO LA ANULAN. Antes de decidir, limpiá el mensaje: sacá el saludo del principio ("hola", "holaa", "buen día", "buenas", "buenas tardes", "hola profe"), sacá el agradecimiento del final ("gracias", "muchas gracias", "gracias profe", "grax") y sacá los emojis. Después clasificá lo que queda. Ejemplos: "Hola ok" queda "ok" → confirma. "Ok 👍" queda "ok" → confirma. "Confirmado gracias" queda "confirmado" → confirma. "Gracias, ahí estoy" queda "ahí estoy" → confirma. "Holaaa si voy" queda "si voy" → confirma. "Buenas tardes, confirmado" queda "confirmado" → confirma. "Hola Sii" queda "Sii" → confirma. "Hola profe, si entrenamos mañana" queda "si entrenamos mañana" → confirma. El saludo, el gracias y el emoji solo mandan cuando son TODO el mensaje y no queda nada más después de sacarlos.
 
 12. UNA NOTA SOBRE EL PAGO NO ES UNA CONDICIÓN PARA VENIR. Muchos alumnos confirman y de paso avisan cuándo van a pagar. Eso es un aviso aparte, NO una condición sobre si vienen. Frases de pago —"apenas pueda paso la transferencia", "ya te transfiero", "mañana te paso la plata", "te paso el comprobante", "el lunes te deposito", "apenas me pase Lili te paso"— se SACAN del mensaje y clasificás lo que queda. Ejemplos: "confirmo mi clase, apenas pueda paso la transferencia" queda "confirmo mi clase" → confirma. "Si voy, después te transfiero" queda "si voy" → confirma. "Ahí estoy, mañana te paso la plata" queda "ahí estoy" → confirma. El "apenas/cuando pueda" acá cuelga del PAGO, no de la clase: no lo trates como "si puedo".
+
+13. UN "NO" PELADO ES UNA CANCELACIÓN. La academia pregunta "¿Entrenamos mañana?". Un "no", "no no", "nono", "nop", "hoy no", "mañana no" —solos, o después de sacarle el saludo del principio (regla 11)— quieren decir que NO viene: es cancela. Es el espejo de la regla 2: si un pulgar solo es confirma, un "no" solo es cancela. Ejemplos: "no" → cancela. "No no" → cancela. "Holaa no" queda "no" → cancela. "hoy no" → cancela. (Ojo: si el "no" trae un motivo de salud o un período —"no entreno esta semana"— mirá las reglas 5 y 6; y si nombra a otro o habla en plural, marcá sobreOtraPersona.)
 
 LO QUE SIGUE SIENDO NADA
 - Un saludo que es TODO el mensaje, sin nada más al lado: "hola", "holaa", "buen día", "buenas". Si después del saludo hay una confirmación, mandá la confirmación (regla 11).
@@ -904,6 +906,41 @@ app.post('/webhooks/whatsapp', (req,res) => {
             else totales.leidosFallaron++;
           }
         }catch(e){ fila.errorAnotar = e.message; totales.errores++; }
+      } else if(anotable && fila.quien && fila.quien.varios){
+        /* NÚMERO COMPARTIDO SIN RESOLVER. Antes se descartaba TODO en silencio:
+           un "no vamos" o un "confirmado" de un número con dos hermanos quedaba
+           sin ninguna anotación, y nadie se enteraba. Ahora, en vez de tirarlo,
+           se deja CELESTE ('pedido', que marca y NO aplica) en CADA candidato que
+           tenga clase mañana (o la fecha dicha), con el texto y una nota. Una
+           persona lo mira y resuelve a mano. Nunca se aplica solo: no se sabe de
+           cuál de los hermanos es, así que no se pinta verde ni se saca a nadie. */
+        try{
+          const hoyC = hoyAsuncion();
+          const fMira = (fila.clasi && fila.clasi.fecha) || sumarDias(hoyC,1);
+          const cuantos = (fila.quien.candidatos||[]).length;
+          const anotadas = [];
+          for(const cand of (fila.quien.candidatos||[])){
+            const u = await ubicarClase(cand.nombre, fMira);
+            if(!u.ok) continue;
+            const puestos = await anotarEnLibreta({
+              tipo:   'pedido',
+              alumno: cand.nombre,
+              texto:  msg.texto,
+              tel:    msg.tel,
+              fecha:  u.fecha,
+              nota:   'Número compartido entre '+cuantos+' alumnos: llegó un mensaje ("'+String(msg.texto||'').slice(0,60)+'", parecía '+ (fila.clasi.tipo) +') pero no se sabe de cuál. Revisalo y resolvelo a mano.',
+              clases: u.clases
+            });
+            anotadas.push(...puestos);
+          }
+          if(anotadas.length){
+            fila.compartidoCeleste = anotadas.length;
+            totales.anotados += anotadas.length;
+            totales.compartidoRevisar = (totales.compartidoRevisar||0) + 1;
+          } else {
+            fila.noAnotado = 'número compartido sin resolver y sin clase ubicada para '+fMira;
+          }
+        }catch(e){ fila.errorCompartido = e.message; }
       } else if(anotable){
         fila.noAnotado = 'no se sabe de quién es el mensaje';
       }
@@ -1228,11 +1265,17 @@ app.post('/enviar-confirmaciones', async (req,res) => {
   }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
 });
 
-app.listen(PUERTO, () => {
-  console.log('🎾 Agente Academia DG · '+VERSION+' — puerto '+PUERTO);
-  if(!SECRETO)         console.log('   ⚠ Sin WEBHOOK_SECRET: no se verifica la firma.');
-  if(!CLAVE_IA)        console.log('   ⚠ Sin ANTHROPIC_API_KEY: no va a clasificar.');
-  if(!AGENTE_PASSWORD) console.log('   ⚠ Sin AGENTE_PASSWORD: no va a poder leer el padrón.');
-});
+/* El server arranca SIEMPRE en producción. Con SIN_SERVIDOR=1 (que pone prueba.js)
+   se importa el módulo para testear las funciones sin levantar el puerto. */
+if(!process.env.SIN_SERVIDOR){
+  app.listen(PUERTO, () => {
+    console.log('🎾 Agente Academia DG · '+VERSION+' — puerto '+PUERTO);
+    if(!SECRETO)         console.log('   ⚠ Sin WEBHOOK_SECRET: no se verifica la firma.');
+    if(!CLAVE_IA)        console.log('   ⚠ Sin ANTHROPIC_API_KEY: no va a clasificar.');
+    if(!AGENTE_PASSWORD) console.log('   ⚠ Sin AGENTE_PASSWORD: no va a poder leer el padrón.');
+  });
+}
 
+/* Exportadas para la suite de pruebas (prueba.js). No cambian nada del server. */
+export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION };
 export default app;
