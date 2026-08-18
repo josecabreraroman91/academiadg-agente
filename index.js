@@ -1444,13 +1444,17 @@ app.post('/enviar-confirmaciones', async (req,res) => {
       if(u8) paraGuardar[u8] = paraGuardar[u8] ? paraGuardar[u8]+'|'+a.nombre : String(a.nombre||'');
       /* Registro de entrega, keyed por el id del mensaje (o uno sintético si el
          envío fue rechazado y no hubo id, para que el rechazo igual salga en el
-         reporte). El webhook de estado completa 'estado' cruzando por esta clave. */
-      const ce = claveEntrega(r.id || ('sin_' + (u8 || 'x') + '_' + idxEnvio));
-      paraEntrega[ce] = { nombre:String(a.nombre||''), tel:String(a.tel||''),
-                          hora:a.hora||'', sede:a.sede||'', fecha:FECHA_ENVIO,
-                          estado: r.ok ? 'aceptado' : 'rechazado',
-                          motivo: r.ok ? null : (r.error || 'no se pudo enviar'),
-                          ts:new Date().toISOString() };
+         reporte). El webhook de estado completa 'estado' cruzando por esta clave.
+         ENVUELTO EN SU PROPIO CANDADO: pase lo que pase acá, el envío NO se frena.
+         El reporte es secundario; mandar el mensaje es lo que no puede fallar. */
+      try{
+        const ce = claveEntrega(r.id || ('sin_' + (u8 || 'x') + '_' + idxEnvio));
+        paraEntrega[ce] = { nombre:String(a.nombre||''), tel:String(a.tel||''),
+                            hora:a.hora||'', sede:a.sede||'', fecha:FECHA_ENVIO,
+                            estado: r.ok ? 'aceptado' : 'rechazado',
+                            motivo: r.ok ? null : (r.error || 'no se pudo enviar'),
+                            ts:new Date().toISOString() };
+      }catch(e){ /* el reporte no puede romper el envío */ }
       idxEnvio++;
       resultados.push({ nombre:a.nombre, tel:a.tel, ok:r.ok, error:r.error||null,
                         id:r.id||null, estado:r.estado||null, respuesta:r.respuesta||null });
