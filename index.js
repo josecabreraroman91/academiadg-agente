@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-4.9';
+const VERSION = 'etapa-5.0';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -73,7 +73,7 @@ const TOPE_ENVIO_DIA  = 250;   // tope de Meta sin verificación de empresa
 const CUANTOS_GUARDA = 100;
 const registro = [];
 const arranque = new Date();
-const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, deOtro:0, cancelCeleste:0, resueltosCompartido:0, leidos:0, leidosFallaron:0, errores:0 };
+const totales = { recibidos:0, firmaMal:0, clasificados:0, sinAlumno:0, anotados:0, deOtro:0, cancelCeleste:0, resueltosCompartido:0, leidos:0, leidosFallaron:0, estados:0, errores:0 };
 
 /* ---------- QUÉ DÍA ES EN ASUNCIÓN ----------
    Este servidor vive en hora universal, que va adelante de Paraguay. Pidiéndole
@@ -744,6 +744,72 @@ function leerMensaje(cuerpo){
   };
 }
 
+/* ============================================================
+   ESTADO DE ENTREGA — los avisos que manda Meta (vía Kapso)
+
+   Al enviar, Meta solo dice "lo ACEPTÉ" (nos da un id). Que haya llegado de
+   verdad se sabe DESPUÉS, con estos avisos: whatsapp.message.sent/delivered/
+   read/failed, que traen el MISMO id del mensaje. Con eso cruzamos y sabemos a
+   quién NO le llegó, en vez de darlo por enviado y buscarlo a mano.
+   `failed` trae el motivo en message.kapso.statuses[].errors (ej. 131047:
+   "pasaron más de 24 h desde que el alumno respondió"). */
+const EVENTOS_ESTADO = {
+  'whatsapp.message.sent':'enviado', 'whatsapp.message.delivered':'entregado',
+  'whatsapp.message.read':'leido',   'whatsapp.message.failed':'fallo'
+};
+const ESTADO_POR_STATUS = { sent:'enviado', delivered:'entregado', read:'leido', failed:'fallo' };
+function leerEstadoEntrega(evento, cuerpo){
+  const m = (cuerpo && cuerpo.message) || {};
+  const k = m.kapso || {};
+  let estado = EVENTOS_ESTADO[String(evento||'')];
+  /* Respaldo: si el nombre del evento no matchea exacto pero el cuerpo trae un
+     status de entrega y NO es un mensaje de texto entrante, igual es un estado.
+     Así el reporte no queda vacío por una variante del header. */
+  if(!estado){
+    const hayTexto = !!((m.text && m.text.body) || (k && k.content));
+    if(!hayTexto && k && ESTADO_POR_STATUS[String(k.status||'')]) estado = ESTADO_POR_STATUS[k.status];
+  }
+  if(!estado) return { esEstado:false };
+  let motivo = null;
+  if(estado === 'fallo'){
+    // el error puede venir en el estado actual o en el historial de estados
+    let err = null;
+    const sts = Array.isArray(k.statuses) ? k.statuses : [];
+    for(let i = sts.length - 1; i >= 0 && !err; i--){
+      if(sts[i] && Array.isArray(sts[i].errors) && sts[i].errors[0]) err = sts[i].errors[0];
+    }
+    if(!err && Array.isArray(k.errors) && k.errors[0]) err = k.errors[0];
+    if(err) motivo = String(err.message || err.title || ('código ' + err.code)) +
+                     (err.code ? (' (' + err.code + ')') : '');
+  }
+  return { esEstado:true, id: m.id || '', estado, tel: m.to || '', motivo };
+}
+
+/* Los id de WhatsApp (wamid…) traen '.', '=', '/' que Firebase NO acepta como
+   clave. Se cambian por '_' de forma fija, así el envío y el aviso de estado del
+   mismo mensaje caen exactamente en la misma clave y se pueden cruzar. */
+function claveEntrega(id){ return String(id || '').replace(/[.#$/\[\]=]/g, '_') || '_'; }
+
+/* Arma el reporte de entregas de un día a partir de lo guardado en Firebase:
+   cuántos llegaron, a quiénes NO (con motivo) y cuáles quedaron sin confirmar. */
+function resumenEntregas(mapa, fecha){
+  const recs = Object.values(mapa || {}).filter(r => r && (!fecha || r.fecha === fecha));
+  const noLlego = [], sinConfirmar = [];
+  let llegaron = 0;
+  recs.forEach(r => {
+    const e = r.estado || 'aceptado';
+    if(e === 'rechazado' || e === 'fallo'){
+      noLlego.push({ nombre: r.nombre || '(sin nombre)', tel: r.tel || '', motivo: r.motivo || 'no se entregó' });
+    } else if(e === 'entregado' || e === 'leido'){
+      llegaron++;
+    } else {   // aceptado / enviado: Meta lo tomó pero nunca confirmó la entrega
+      sinConfirmar.push({ nombre: r.nombre || '(sin nombre)', tel: r.tel || '',
+                          motivo: 'Meta lo aceptó pero no confirmó entrega' });
+    }
+  });
+  return { fecha: fecha || null, total: recs.length, llegaron, noLlego, sinConfirmar };
+}
+
 /* ---------- El webhook ---------- */
 app.post('/webhooks/whatsapp', (req,res) => {
   res.status(200).send('OK');            // primero avisar que llegó: Kapso corta a los 10 s
@@ -757,6 +823,24 @@ app.post('/webhooks/whatsapp', (req,res) => {
         return;
       }
       totales.recibidos++;
+
+      /* ¿Es un aviso de ENTREGA (sent/delivered/read/failed) y no un mensaje?
+         Se cruza por el id con lo que guardamos al enviar y se anota el estado
+         real. Un aviso de entrega NO es un mensaje que haya que clasificar. */
+      const est = leerEstadoEntrega(evento, req.body);
+      if(est.esEstado){
+        totales.estados = (totales.estados || 0) + 1;
+        if(est.id){
+          try{
+            await guardarEnFirebase('agente_v1/entregas/' + claveEntrega(est.id),
+              { estado: est.estado, motivo: est.motivo || null,
+                tel: est.tel || null, tsEstado: new Date().toISOString() });
+          }catch(e){ anotar({ tipo:'ESTADO', evento, error:e.message }); }
+        }
+        anotar({ tipo:'ESTADO', evento, estado:est.estado, tel:est.tel, motivo:est.motivo || null });
+        return;
+      }
+
       const msg = leerMensaje(req.body);
       const fila = { tipo:'MENSAJE', evento, msg, cuerpo:req.body };
 
@@ -1075,6 +1159,22 @@ app.get('/diag-cal', async (req,res) => {
   }catch(e){ res.json({ puedeLeerCalendario:false, error:e.message }); }
 });
 
+/* ---------- REPORTE DE ENTREGAS ----------
+   Lo llama el calendario después de un envío por Meta para mostrar a quién NO le
+   llegó de verdad (falló) y a quién Meta aceptó pero nunca confirmó la entrega.
+   Sin fecha, usa el día de hoy en Asunción (el día del envío). Protegido con la
+   contraseña del agente, igual que /enviar-confirmaciones. */
+app.get('/entregas', async (req,res) => {
+  const clave = req.query.clave || '';
+  if(!AGENTE_PASSWORD || clave !== AGENTE_PASSWORD)
+    return res.status(401).json({ ok:false, error:'clave incorrecta' });
+  const fecha = req.query.fecha || hoyAsuncion();
+  try{
+    const mapa = await leerFirebase('agente_v1/entregas') || {};
+    res.json({ ok:true, ...resumenEntregas(mapa, fecha) });
+  }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
+});
+
 /* ---------- La pantalla ---------- */
 app.get('/', (req,res) => {
   const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1334,15 +1434,33 @@ app.post('/enviar-confirmaciones', async (req,res) => {
        quedan los dos separados por "|" y entonces NO desempata nada, que es lo
        correcto: ahí de verdad no se sabe quién contestó. */
     const paraGuardar = {};   // últimos 8 dígitos -> nombre(s) a quien le mandamos
+    const paraEntrega = {};   // clave del id -> registro de entrega (lo completa el webhook)
+    const FECHA_ENVIO = hoyAsuncion();
+    let idxEnvio = 0;
     for(const a of lista){
       const r = await enviarConfirmacion(a.tel, a.nombre, a.hora, a.sede, plantilla);
       if(r.ok){ bien++; } else { mal++; }
       const u8 = soloDigitos8(a.tel);
       if(u8) paraGuardar[u8] = paraGuardar[u8] ? paraGuardar[u8]+'|'+a.nombre : String(a.nombre||'');
+      /* Registro de entrega, keyed por el id del mensaje (o uno sintético si el
+         envío fue rechazado y no hubo id, para que el rechazo igual salga en el
+         reporte). El webhook de estado completa 'estado' cruzando por esta clave. */
+      const ce = claveEntrega(r.id || ('sin_' + (u8 || 'x') + '_' + idxEnvio));
+      paraEntrega[ce] = { nombre:String(a.nombre||''), tel:String(a.tel||''),
+                          hora:a.hora||'', sede:a.sede||'', fecha:FECHA_ENVIO,
+                          estado: r.ok ? 'aceptado' : 'rechazado',
+                          motivo: r.ok ? null : (r.error || 'no se pudo enviar'),
+                          ts:new Date().toISOString() };
+      idxEnvio++;
       resultados.push({ nombre:a.nombre, tel:a.tel, ok:r.ok, error:r.error||null,
                         id:r.id||null, estado:r.estado||null, respuesta:r.respuesta||null });
       await new Promise(ok=>setTimeout(ok, 120));  // respiro entre mensajes
     }
+
+    /* Guardamos el registro de entregas para poder mostrar después quién NO
+       recibió. Si falla, los mensajes ya salieron: no rompemos el envío. */
+    try{ await guardarEnFirebase('agente_v1/entregas', paraEntrega); }
+    catch(e){ resultados.push({ avisoEntregas:'no se pudo guardar el registro de entregas: '+e.message }); }
 
     /* Guardamos a quiénes les mandamos, para procesar SOLO sus respuestas. Si
        esto falla (por ejemplo un permiso de Firebase), los mensajes ya se
@@ -1377,5 +1495,5 @@ if(!process.env.SIN_SERVIDOR){
 /* Solo para prueba.js: siembra el cache del calendario con datos controlados,
    así se puede testear ubicarEnSemana sin tocar Firebase. */
 function _cacheCalendarioPrueba(cal){ _cal = cal; _calTs = Date.now(); }
-export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba };
+export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba, leerEstadoEntrega, claveEntrega, resumenEntregas };
 export default app;

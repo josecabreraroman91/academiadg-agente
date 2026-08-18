@@ -24,7 +24,8 @@ try{
 
 process.env.SIN_SERVIDOR = '1';   // importar sin levantar el puerto
 const { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, VERSION,
-        diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba } = await import('./index.js');
+        diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba,
+        leerEstadoEntrega, claveEntrega, resumenEntregas } = await import('./index.js');
 
 let pass=0, fail=0; const fails=[];
 const ok = (name, cond, extra) => { if(cond) pass++; else { fail++; fails.push(name + (extra?' — '+extra:'')); } };
@@ -93,6 +94,34 @@ ok('SEMANA no ubica en DOMINGO', (await ubicarEnSemana('Eleonora Scavone', '2026
 const uProx = await ubicarEnSemana('Prox Semana', '2026-08-25');   // martes de la semana que viene
 ok('SEMANA usa semanaProxima (7-12 días)', uProx.length===1 && uProx[0].sede==='lomas', JSON.stringify(uProx));
 ok('SEMANA no ubica fuera de las 2 semanas cargadas', (await ubicarEnSemana('Eleonora Scavone', '2026-09-30')).length===0);
+
+/* ---------- Reporte de entregas por Meta (etapa-5.0) ---------- */
+const evFalla = leerEstadoEntrega('whatsapp.message.failed', { message:{
+  id:'wamid.HBgLABC=', to:'595981111111',
+  kapso:{ status:'failed', statuses:[{ status:'failed',
+    errors:[{ code:131047, message:'More than 24 hours have passed since the recipient last replied' }] }] } } });
+ok('estado failed → esEstado + fallo', evFalla.esEstado && evFalla.estado==='fallo', JSON.stringify(evFalla));
+ok('estado failed → motivo con el código 131047', /131047/.test(evFalla.motivo||''), evFalla.motivo);
+ok('estado failed → id y tel', evFalla.id==='wamid.HBgLABC=' && evFalla.tel==='595981111111');
+
+const evEntreg = leerEstadoEntrega('whatsapp.message.delivered', { message:{ id:'wamid.X', to:'595', kapso:{ status:'delivered' } } });
+ok('estado delivered → entregado', evEntreg.esEstado && evEntreg.estado==='entregado');
+
+ok('un mensaje entrante NO es estado', leerEstadoEntrega('whatsapp.message.received', { message:{ text:{ body:'hola' } } }).esEstado === false);
+
+ok('claveEntrega cambia el punto y el igual', claveEntrega('wamid.HBgL=') === 'wamid_HBgL_');
+
+const rep = resumenEntregas({
+  a:{ nombre:'Ana',  tel:'1', fecha:'2026-08-18', estado:'entregado' },
+  b:{ nombre:'Beto', tel:'2', fecha:'2026-08-18', estado:'fallo', motivo:'sin WhatsApp' },
+  c:{ nombre:'Cami', tel:'3', fecha:'2026-08-18', estado:'aceptado' },
+  d:{ nombre:'Zoe',  tel:'4', fecha:'2026-08-17', estado:'fallo' },   // otro día: se filtra
+}, '2026-08-18');
+ok('resumen: 1 llegó, 1 no llegó, 1 sin confirmar',
+   rep.llegaron===1 && rep.noLlego.length===1 && rep.sinConfirmar.length===1, JSON.stringify(rep));
+ok('resumen filtra por fecha (total 3)', rep.total===3, 'total '+rep.total);
+ok('resumen: el que no llegó trae nombre y motivo',
+   rep.noLlego[0].nombre==='Beto' && rep.noLlego[0].motivo==='sin WhatsApp');
 
 /* ---------- 2. CLASIFICADOR (necesita ANTHROPIC_API_KEY) ---------- */
 const CASOS = [
