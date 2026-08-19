@@ -25,7 +25,8 @@ try{
 process.env.SIN_SERVIDOR = '1';   // importar sin levantar el puerto
 const { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, VERSION,
         diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba,
-        leerEstadoEntrega, claveEntrega, resumenEntregas } = await import('./index.js');
+        leerEstadoEntrega, claveEntrega, resumenEntregas,
+        claveConfirmacion, filtrarYaEnviados } = await import('./index.js');
 
 let pass=0, fail=0; const fails=[];
 const ok = (name, cond, extra) => { if(cond) pass++; else { fail++; fails.push(name + (extra?' — '+extra:'')); } };
@@ -122,6 +123,54 @@ ok('resumen: 1 llegó, 1 no llegó, 1 sin confirmar',
 ok('resumen filtra por fecha (total 3)', rep.total===3, 'total '+rep.total);
 ok('resumen: el que no llegó trae nombre y motivo',
    rep.noLlego[0].nombre==='Beto' && rep.noLlego[0].motivo==='sin WhatsApp');
+
+/* ---------- Candado anti-duplicado del envío diario (etapa-5.1) ---------- */
+ok('claveConfirmacion: misma persona/hora/sede → misma clave',
+   claveConfirmacion('595981123456','Ana Ruiz','10:00','lomas') ===
+   claveConfirmacion('0981 123-456','Ana Ruiz GRUPAL','10:00','LOMAS'),
+   claveConfirmacion('0981 123-456','Ana Ruiz GRUPAL','10:00','LOMAS'));
+ok('claveConfirmacion: distinta hora → distinta clave',
+   claveConfirmacion('0981','Ana','10:00','lomas') !== claveConfirmacion('0981','Ana','11:00','lomas'));
+ok('claveConfirmacion: mismo número, distinto nombre (hermanos) → distinta clave',
+   claveConfirmacion('0981','Agos','10:00','elite') !== claveConfirmacion('0981','Benja','10:00','elite'));
+ok('claveConfirmacion: sin caracteres que Firebase prohíbe',
+   !/[.#$/\[\]]/.test(claveConfirmacion('0981','Ana. Ruiz','10:00','lo/mas')));
+
+/* Simula el segundo disparo: 3 alumnos, 2 ya salieron hoy → solo 1 se manda */
+const _ya = {};
+_ya[claveConfirmacion('0981','Ana','10:00','lomas')] = '2026-08-19T18:00:00Z';
+_ya[claveConfirmacion('0982','Beto','11:00','elite')] = '2026-08-19T18:00:00Z';
+const filt = filtrarYaEnviados([
+  { tel:'0981', nombre:'Ana',  hora:'10:00', sede:'lomas' },  // ya enviado → salta
+  { tel:'0982', nombre:'Beto', hora:'11:00', sede:'elite' },  // ya enviado → salta
+  { tel:'0983', nombre:'Caro', hora:'09:00', sede:'lomas' },  // nuevo → se manda
+], _ya);
+ok('candado: en el 2º disparo solo queda 1 por mandar', filt.aEnviar.length===1 && filt.aEnviar[0].nombre==='Caro',
+   JSON.stringify(filt.aEnviar.map(x=>x.nombre)));
+ok('candado: reporta 2 salteados', filt.saltados.length===2, 'saltó '+filt.saltados.length);
+ok('candado: el que se manda lleva su _clave para marcarlo después', !!filt.aEnviar[0]._clave);
+
+/* Primer disparo con lista vacía de enviados → se mandan todos */
+const filt0 = filtrarYaEnviados([
+  { tel:'0981', nombre:'Ana', hora:'10:00', sede:'lomas' },
+  { tel:'0982', nombre:'Beto', hora:'11:00', sede:'elite' },
+], {});
+ok('candado: primer disparo manda a todos', filt0.aEnviar.length===2 && filt0.saltados.length===0);
+
+/* Duplicado EXACTO dentro del mismo lote → el segundo se salta */
+const filtDup = filtrarYaEnviados([
+  { tel:'0981', nombre:'Ana', hora:'10:00', sede:'lomas' },
+  { tel:'0981', nombre:'Ana', hora:'10:00', sede:'lomas' },
+], {});
+ok('candado: duplicado exacto en el mismo lote se manda una sola vez',
+   filtDup.aEnviar.length===1 && filtDup.saltados.length===1);
+
+/* Número compartido, dos hermanos distintos → NO se saltea al segundo */
+const filtHnos = filtrarYaEnviados([
+  { tel:'0981', nombre:'Agos',  hora:'10:00', sede:'elite' },
+  { tel:'0981', nombre:'Benja', hora:'10:00', sede:'elite' },
+], {});
+ok('candado: número compartido manda a los dos hermanos', filtHnos.aEnviar.length===2);
 
 /* ---------- 2. CLASIFICADOR (necesita ANTHROPIC_API_KEY) ---------- */
 const CASOS = [

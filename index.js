@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-5.0';
+const VERSION = 'etapa-5.1';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -1404,6 +1404,39 @@ function colapsarHorasSeguidas(lista){
   return salida;
 }
 
+/* ---------- Candado anti-duplicado del envío diario ----------
+   Evita que, si el envío por Meta se dispara dos veces el mismo día (doble
+   clic, recarga, otro dispositivo, o un reintento del gateway), a la gente le
+   llegue el mismo mensaje repetido. La marca vive en Firebase, en
+   agente_v1/confirmadas/<fecha>, así que sobrevive a un reinicio y sirve
+   aunque el segundo disparo venga de otra pestaña o instancia.
+
+   La clave es POR alumno-clase, no por número: incluye nombre + hora + sede.
+   Así un número compartido (dos hermanos) recibe lo de cada uno, y un alumno
+   con dos horarios distintos ese día no pierde ninguno. Charlar con el alumno
+   NO toca esta marca: solo la pone el envío de la confirmación. */
+function claveConfirmacion(tel, nombre, hora, sede){
+  const base = soloDigitos8(tel)+'|'+claveNombre(nombre)+'|'+
+               String(hora||'').trim()+'|'+String(sede||'').toLowerCase().trim();
+  return base.replace(/[.#$/\[\]]/g,'_');   // caracteres que Firebase no admite en una clave
+}
+
+/* Separa la lista en los que hay que mandar y los que ya salieron hoy.
+   `yaEnviados` es lo leído de Firebase (objeto {clave:ts}) o un Set de claves.
+   También corta duplicados EXACTOS dentro del mismo lote. Función pura: se
+   testea sin tocar Firebase. */
+function filtrarYaEnviados(lista, yaEnviados){
+  const set = yaEnviados instanceof Set ? new Set(yaEnviados)
+                                        : new Set(Object.keys(yaEnviados||{}));
+  const aEnviar = [], saltados = [];
+  for(const a of lista){
+    const k = claveConfirmacion(a.tel, a.nombre, a.hora, a.sede);
+    if(set.has(k)){ saltados.push({ nombre:a.nombre, tel:a.tel, hora:a.hora, sede:a.sede, clave:k }); }
+    else { aEnviar.push({ ...a, _clave:k }); set.add(k); }
+  }
+  return { aEnviar, saltados };
+}
+
 app.post('/enviar-confirmaciones', async (req,res) => {
   try{
     const clave = (req.body && req.body.clave) || req.query.clave || '';
@@ -1419,13 +1452,26 @@ app.post('/enviar-confirmaciones', async (req,res) => {
     const lista = colapsarHorasSeguidas(listaCruda);
     const colapsados = listaCruda.length - lista.length;
 
+    const FECHA_ENVIO = hoyAsuncion();
+
+    /* Candado anti-duplicado: leemos a quiénes YA les salió la confirmación hoy
+       y los sacamos de la lista, así un doble disparo (doble clic, recarga, otro
+       dispositivo o un reintento del gateway) no repite mensajes. Si Firebase no
+       responde, preferimos MANDAR igual (una repetición rara es mejor que dejar
+       gente sin aviso): seguimos con la lista completa y lo avisamos. */
+    let yaEnviados = {}, avisoCandado = null;
+    try{ yaEnviados = (await leerFirebase('agente_v1/confirmadas/'+FECHA_ENVIO)) || {}; }
+    catch(e){ avisoCandado = 'no pude leer el candado anti-duplicado ('+e.message+'): mandé la lista completa igual'; }
+    const { aEnviar, saltados } = filtrarYaEnviados(lista, yaEnviados);
+
     const forzar = String((req.body && req.body.forzar) || req.query.forzar || '') === '1';
-    if(lista.length > TOPE_ENVIO_DIA && !forzar)
-      return res.status(409).json({ ok:false, tope:true, cuantos:lista.length,
-        error:'Son '+lista.length+' mensajes, más que el tope de '+TOPE_ENVIO_DIA+' de Meta. Confirmá para mandar igual.' });
+    if(aEnviar.length > TOPE_ENVIO_DIA && !forzar)
+      return res.status(409).json({ ok:false, tope:true, cuantos:aEnviar.length,
+        error:'Son '+aEnviar.length+' mensajes, más que el tope de '+TOPE_ENVIO_DIA+' de Meta. Confirmá para mandar igual.' });
 
     const resultados = [];
     let bien = 0, mal = 0;
+    if(avisoCandado) resultados.push({ avisoCandado });
     /* Se guarda el número Y EL NOMBRE del alumno al que le mandamos. El nombre
        es lo que después desempata un número compartido: si a este teléfono le
        mandamos la confirmación de Agos, el que contesta "si confirmo" está
@@ -1433,13 +1479,13 @@ app.post('/enviar-confirmaciones', async (req,res) => {
        ese dato se tiraba. Si al mismo número le mandamos dos —dos hermanos—
        quedan los dos separados por "|" y entonces NO desempata nada, que es lo
        correcto: ahí de verdad no se sabe quién contestó. */
-    const paraGuardar = {};   // últimos 8 dígitos -> nombre(s) a quien le mandamos
-    const paraEntrega = {};   // clave del id -> registro de entrega (lo completa el webhook)
-    const FECHA_ENVIO = hoyAsuncion();
+    const paraGuardar = {};       // últimos 8 dígitos -> nombre(s) a quien le mandamos
+    const paraEntrega = {};       // clave del id -> registro de entrega (lo completa el webhook)
+    const confirmadasNuevas = {}; // clave alumno-clase -> ts, para el candado de hoy
     let idxEnvio = 0;
-    for(const a of lista){
+    for(const a of aEnviar){
       const r = await enviarConfirmacion(a.tel, a.nombre, a.hora, a.sede, plantilla);
-      if(r.ok){ bien++; } else { mal++; }
+      if(r.ok){ bien++; if(a._clave) confirmadasNuevas[a._clave] = new Date().toISOString(); } else { mal++; }
       const u8 = soloDigitos8(a.tel);
       if(u8) paraGuardar[u8] = paraGuardar[u8] ? paraGuardar[u8]+'|'+a.nombre : String(a.nombre||'');
       /* Registro de entrega, keyed por el id del mensaje (o uno sintético si el
@@ -1480,7 +1526,17 @@ app.post('/enviar-confirmaciones', async (req,res) => {
       ULTIMO_GUARDADO = { ok:false, cuando:new Date().toISOString(), error:e.message };
     }
 
-    res.json({ ok:true, total:lista.length, colapsados, bien, mal, guardadoLista, resultados });
+    /* Marcamos en el candado a quiénes les salió bien HOY, para que un segundo
+       disparo del envío no los repita. Si falla, los mensajes ya salieron: no
+       rompemos el envío (solo perdemos la protección hasta el próximo envío). */
+    if(Object.keys(confirmadasNuevas).length){
+      try{ await guardarEnFirebase('agente_v1/confirmadas/'+FECHA_ENVIO, confirmadasNuevas); }
+      catch(e){ resultados.push({ avisoCandado:'no se pudo guardar el candado anti-duplicado: '+e.message }); }
+    }
+
+    res.json({ ok:true, total:lista.length, colapsados, bien, mal,
+               saltados:saltados.length, saltadosLista:saltados.map(s=>s.nombre),
+               guardadoLista, resultados });
   }catch(e){ res.status(500).json({ ok:false, error:e.message }); }
 });
 
@@ -1499,5 +1555,5 @@ if(!process.env.SIN_SERVIDOR){
 /* Solo para prueba.js: siembra el cache del calendario con datos controlados,
    así se puede testear ubicarEnSemana sin tocar Firebase. */
 function _cacheCalendarioPrueba(cal){ _cal = cal; _calTs = Date.now(); }
-export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba, leerEstadoEntrega, claveEntrega, resumenEntregas };
+export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba, leerEstadoEntrega, claveEntrega, resumenEntregas, claveConfirmacion, filtrarYaEnviados };
 export default app;
