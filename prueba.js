@@ -26,7 +26,8 @@ process.env.SIN_SERVIDOR = '1';   // importar sin levantar el puerto
 const { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, VERSION,
         diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba,
         leerEstadoEntrega, claveEntrega, resumenEntregas,
-        claveConfirmacion, filtrarYaEnviados } = await import('./index.js');
+        claveConfirmacion, filtrarYaEnviados,
+        quienEs, _seedPruebaCompartido } = await import('./index.js');
 
 let pass=0, fail=0; const fails=[];
 const ok = (name, cond, extra) => { if(cond) pass++; else { fail++; fails.push(name + (extra?' — '+extra:'')); } };
@@ -171,6 +172,29 @@ const filtHnos = filtrarYaEnviados([
   { tel:'0981', nombre:'Benja', hora:'10:00', sede:'elite' },
 ], {});
 ok('candado: número compartido manda a los dos hermanos', filtHnos.aEnviar.length===2);
+
+/* ---------- Número de familia: no atribuir a un solo hermano por el contacto (etapa-5.2) ---------- */
+const TEL = '595981954957';                 // colaTel = 81954957
+const HERMANOS = { '81954957': [{nombre:'Ami Nakagoe'}, {nombre:'Noriyuki Nakagoe'}] };
+
+/* Caso José: hoy le mandamos confirmación a LOS DOS. El contacto trae solo a Ami.
+   Antes resolvía todo a Ami (y Noriyuki se perdía); ahora queda compartido. */
+_seedPruebaCompartido({ porTel:HERMANOS, enviados:new Map([['81954957','Ami Nakagoe|Noriyuki Nakagoe']]) });
+const qFam = await quienEs(TEL, 'Ami Nakagoe Mama de sus hijos');
+ok('familia activa (a los 2 les mandamos hoy) → NO resuelve por contacto, queda compartido',
+   qFam.varios===true && !qFam.encontrado && qFam.familiaActiva===true, JSON.stringify(qFam));
+
+/* Si hoy le mandamos a UN solo hermano, sí se resuelve a ese (por la confirmación). */
+_seedPruebaCompartido({ porTel:HERMANOS, enviados:new Map([['81954957','Ami Nakagoe']]) });
+const qUno = await quienEs(TEL, 'Ami Nakagoe Mama de sus hijos');
+ok('a un solo hermano le mandamos hoy → resuelve a ese (por la confirmación)',
+   qUno.encontrado===true && qUno.alumno && qUno.alumno.nombre==='Ami Nakagoe' && !!qUno.porLaConfirmacion, JSON.stringify(qUno));
+
+/* Sin envíos hoy → se conserva la resolución por el nombre del contacto (no rompimos eso). */
+_seedPruebaCompartido({ porTel:HERMANOS, enviados:new Map() });
+const qCont = await quienEs(TEL, 'Ami Nakagoe Mama');
+ok('sin envíos hoy → sigue resolviendo por el nombre del contacto (no se rompió)',
+   qCont.encontrado===true && qCont.alumno && qCont.alumno.nombre==='Ami Nakagoe' && !!qCont.porNombreDelContacto, JSON.stringify(qCont));
 
 /* ---------- 2. CLASIFICADOR (necesita ANTHROPIC_API_KEY) ---------- */
 const CASOS = [

@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-5.1';
+const VERSION = 'etapa-5.2';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -367,6 +367,13 @@ async function quienEs(telefono, nombreContacto){
      confirma por Agos, aunque el teléfono esté a nombre de la madre y aunque
      la madre también sea alumna. Si le mandamos a los dos hermanos, no
      desempata: ahí de verdad no se sabe. */
+  /* Si HOY le mandamos confirmación a 2+ hermanos de este mismo número, es una
+     familia activa: la mamá (dueña del teléfono) maneja a los dos y su respuesta
+     puede ser de cualquiera —o de los dos, como "presente los dos" o "solo Mina
+     va mañana"—. En ese caso NO se resuelve por el nombre del contacto (que lleva
+     el nombre de UN solo hijo y haría que se pierda el otro): queda como número
+     compartido y se marca celeste a todos, para que una persona lo resuelva. */
+  let mandamosAVarios = false;
   try{
     const lista = await listaEnviados(hoyAsuncion());
     const aQuien = lista ? lista.get(colaTel(telefono)) : null;
@@ -374,13 +381,15 @@ async function quienEs(telefono, nombreContacto){
       const conNombre = cands.filter(c => apareceEn(aQuien, c));
       if(conNombre.length === 1)
         return { encontrado:true, alumno:conNombre[0], candidatos:cands, porLaConfirmacion:aQuien };
+      if(conNombre.length >= 2) mandamosAVarios = true;
     }
   }catch(e){}
 
   /* Kapso manda el nombre con el que la academia tiene guardado el contacto.
      Si coincide con uno de los candidatos, resuelve el número compartido sin
-     tener que preguntarle nada al alumno. */
-  if(nombreContacto){
+     tener que preguntarle nada al alumno. NO se hace si es una familia activa
+     (2+ hermanos con confirmación hoy): ahí el contacto no dice de cuál es. */
+  if(nombreContacto && !mandamosAVarios){
     const porNombre = cands.find(c => limpio(c.nombre) === limpio(nombreContacto));
     if(porNombre) return { encontrado:true, alumno:porNombre, candidatos:cands, porNombreDelContacto:true };
 
@@ -395,7 +404,7 @@ async function quienEs(telefono, nombreContacto){
     if(conNombre.length === 1)
       return { encontrado:true, alumno:conNombre[0], candidatos:cands, porNombreDelContacto:true };
   }
-  return { encontrado:false, varios:true, candidatos:cands };
+  return { encontrado:false, varios:true, candidatos:cands, familiaActiva:mandamosAVarios };
 }
 
 /* ============================================================
@@ -1555,5 +1564,11 @@ if(!process.env.SIN_SERVIDOR){
 /* Solo para prueba.js: siembra el cache del calendario con datos controlados,
    así se puede testear ubicarEnSemana sin tocar Firebase. */
 function _cacheCalendarioPrueba(cal){ _cal = cal; _calTs = Date.now(); }
-export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba, leerEstadoEntrega, claveEntrega, resumenEntregas, claveConfirmacion, filtrarYaEnviados };
+/* Solo para prueba.js: siembra el padrón (porTel) y la lista de enviados del día,
+   para testear quienEs (números compartidos) sin tocar Firebase. */
+function _seedPruebaCompartido(seed){
+  if(seed && seed.porTel){ _padron = { porTel: seed.porTel }; _padronTs = Date.now(); }
+  if(seed && seed.enviados){ _enviados = { hasta: Date.now() + 3600000, set: seed.enviados }; }
+}
+export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba, leerEstadoEntrega, claveEntrega, resumenEntregas, claveConfirmacion, filtrarYaEnviados, quienEs, _seedPruebaCompartido };
 export default app;
