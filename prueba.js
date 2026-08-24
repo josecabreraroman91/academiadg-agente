@@ -27,7 +27,8 @@ const { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias
         diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba,
         leerEstadoEntrega, claveEntrega, resumenEntregas,
         claveConfirmacion, filtrarYaEnviados,
-        quienEs, _seedPruebaCompartido } = await import('./index.js');
+        quienEs, _seedPruebaCompartido,
+        fechaValida, sanearClasificacion, horasMencionadas, horaQueNoEsLaSuya, HORAS } = await import('./index.js');
 
 let pass=0, fail=0; const fails=[];
 const ok = (name, cond, extra) => { if(cond) pass++; else { fail++; fails.push(name + (extra?' — '+extra:'')); } };
@@ -196,6 +197,53 @@ const qCont = await quienEs(TEL, 'Ami Nakagoe Mama');
 ok('sin envíos hoy → sigue resolviendo por el nombre del contacto (no se rompió)',
    qCont.encontrado===true && qCont.alumno && qCont.alumno.nombre==='Ami Nakagoe' && !!qCont.porNombreDelContacto, JSON.stringify(qCont));
 
+/* ---------- Sanear lo que devuelve la IA (casos del 24/08/2026) ---------- */
+/* El renglón real que rompió todo: la fecha venía con basura de formato adentro. */
+ok('fecha con basura de formato → vacía', fechaValida('2026-08-25</fecha></invoke>') === '');
+ok('fecha buena pasa', fechaValida('2026-08-25') === '2026-08-25');
+ok('fecha con espacios se limpia', fechaValida('  2026-08-25 ') === '2026-08-25');
+ok('fecha que no existe (30 de febrero) → vacía', fechaValida('2026-02-30') === '');
+ok('mes 13 → vacía', fechaValida('2026-13-01') === '');
+ok('texto suelto → vacía', fechaValida('mañana') === '');
+ok('nulo → vacía', fechaValida(null) === '');
+ok('formato dd/mm → vacía', fechaValida('25/08/2026') === '');
+
+const sc = sanearClasificacion({ tipo:'confirma', fecha:'2026-08-25</fecha></invoke>', hasta:'x', sobreOtraPersona:1 });
+ok('sanear: limpia la fecha rota', sc.fecha === '', JSON.stringify(sc));
+ok('sanear: limpia el hasta roto', sc.hasta === '');
+ok('sanear: conserva el tipo válido', sc.tipo === 'confirma');
+ok('sanear: sobreOtraPersona queda booleano', sc.sobreOtraPersona === true);
+ok('sanear: tipo inventado → nada', sanearClasificacion({ tipo:'cualquiera' }).tipo === 'nada');
+ok('sanear: sin tipo → nada', sanearClasificacion({}).tipo === 'nada');
+ok('sanear: no rompe una clasificación buena',
+   sanearClasificacion({tipo:'pedido', fecha:'2026-08-25'}).fecha === '2026-08-25');
+
+/* ---------- Guarda de hora: el falso presente (caso Elio, 24/08) ---------- */
+const jsonH = t => JSON.stringify(horasMencionadas(t));
+ok('"Mañana 17 hs puedo !" → [17]', jsonH('Mañana 17 hs puedo !') === '[17]', jsonH('Mañana 17 hs puedo !'));
+ok('"confirmo 17 Hrs en Lomas" → [17]', jsonH('Si, confirmo 17 Hrs en Lomas Padel') === '[17]');
+ok('"nos vemos a las 8:00" → [8]', jsonH('nos vemos a las 8:00') === '[8]');
+ok('"a las 5 de la tarde" → [17]', jsonH('puedo a las 5 de la tarde') === '[17]');
+ok('"entrenar entre 4" → [] (son personas, no las 4)', jsonH('podemos entrenar entre 4?') === '[]', jsonH('podemos entrenar entre 4?'));
+ok('"dale" → []', jsonH('dale') === '[]');
+ok('"Si, nos vemos!" → []', jsonH('Si, nos vemos!') === '[]');
+
+const claseA = (...hs) => ({ ok:true, clases: hs.map(h => ({ horaIdx: HORAS.indexOf(h+':00') })) });
+ok('CASO ELIO: clase 15:00 + "Mañana 17 hs puedo" → es otra hora',
+   !!horaQueNoEsLaSuya('Mañana 17 hs puedo !', claseA(15)));
+ok('CASO ROSTI: clase 17:00 + "confirmo 17 hrs" → NO es otra hora (sigue confirma)',
+   horaQueNoEsLaSuya('Si, confirmo 17 Hrs en Lomas Padel', claseA(17)) === null);
+ok('CASO PETY: clase 8:00 + "nos vemos a las 8:00" → sigue confirma',
+   horaQueNoEsLaSuya('Hola si señor nos vemos a las 8:00', claseA(8)) === null);
+ok('bloque 15+16 + "16 hs" → sigue confirma',
+   horaQueNoEsLaSuya('confirmo 16 hs', claseA(15,16)) === null);
+ok('bloque 15+16 + "18 hs" → es otra hora',
+   !!horaQueNoEsLaSuya('puedo 18 hs', claseA(15,16)));
+ok('sin hora nombrada → no toca nada', horaQueNoEsLaSuya('dale', claseA(15)) === null);
+ok('sin clase ubicada → no toca nada', horaQueNoEsLaSuya('puedo 17 hs', {ok:false}) === null);
+ok('CASO SEBASTIAN: "entre 4" no degrada la confirmación',
+   horaQueNoEsLaSuya('Sii le metemos, podemos entrenar entre 4?', claseA(16)) === null);
+
 /* ---------- 2. CLASIFICADOR (necesita ANTHROPIC_API_KEY) ---------- */
 const CASOS = [
   // Deben ser CONFIRMA (casos reales que fallaban + guardas)
@@ -204,6 +252,10 @@ const CASOS = [
   ['Holaaa confirmado!!','confirma'], ['Holi nos vemos','confirma'],
   ['Sii le metemos','confirma'], ['dale','confirma'], ['ok 👍','confirma'],
   ['confirmo mi clase, apenas pueda paso la transferencia','confirma'],
+  // Casos reales del 24/08 (Joaquín, Veronica, Jorge): el clasificador ya los lee
+  // bien — lo que fallaba era el padrón. Quedan acá para que no se rompan nunca.
+  ['Buenas, si si','confirma'], ['Si','confirma'], ['Si, nos vemos!','confirma'],
+  ['A fulll','confirma'],
   // Deben ser CANCELA
   ['No no','cancela'], ['Holaa no','cancela'], ['mañana no puedo','cancela'], ['hoy no llego','cancela'],
   // Deben ser PEDIDO

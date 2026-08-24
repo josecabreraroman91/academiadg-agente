@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-5.2';
+const VERSION = 'etapa-5.3';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -481,6 +481,39 @@ Se te dice abajo qué día es hoy. Convertí lo que dice el alumno en una fecha 
 - UNA DESPEDIDA NO ES LA FECHA DE LA CLASE. "hasta mañana", "nos vemos mañana", "hasta el jueves", "nos vemos" son un saludo de despedida, no dicen qué día entrena. No saques una fecha de ahí. En una confirmación, poné fecha SOLO si el alumno dice explícitamente qué día es su clase; si solo se despide, dejá la fecha vacía (así se busca la clase de mañana, que es por la que se preguntó).
 Nunca uses una fecha de tu memoria. Si es vago, vacío.`;
 
+/* ============================================================
+   SANEAR LO QUE DEVUELVE LA IA
+
+   Lo que contesta el modelo se guardaba TAL CUAL en la libreta. El 24/8 apareció
+   un renglón con la fecha "2026-08-25</fecha></invoke>": basura de formato metida
+   adentro del valor. Con esa fecha el calendario no puede ubicar la clase y la
+   confirmación se pierde en silencio.
+
+   Acá se revisa antes de guardar nada: una fecha tiene que ser AAAA-MM-DD y
+   existir de verdad (un 30 de febrero no vale). Si no cumple, se deja VACÍA, que
+   es el caso normal de una confirmación —el sistema busca la clase de mañana
+   solo—. Y el tipo tiene que ser uno de los cinco conocidos.
+   ============================================================ */
+const TIPOS_VALIDOS = ['confirma','cancela','pedido','ausencia','nada'];
+function fechaValida(v){
+  const s = String(v==null?'':v).trim();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '';
+  const [a,m,d] = s.split('-').map(Number);
+  const f = new Date(Date.UTC(a, m-1, d));
+  if(f.getUTCFullYear()!==a || f.getUTCMonth()!==m-1 || f.getUTCDate()!==d) return '';  // 2026-02-30
+  return s;
+}
+function sanearClasificacion(c){
+  const o = Object.assign({}, c || {});
+  o.tipo = TIPOS_VALIDOS.indexOf(o.tipo) >= 0 ? o.tipo : 'nada';
+  o.fecha = fechaValida(o.fecha);
+  o.hasta = fechaValida(o.hasta);
+  o.sobreOtraPersona = !!o.sobreOtraPersona;
+  if(o.motivo != null) o.motivo = String(o.motivo).slice(0,200);
+  if(o.porque != null) o.porque = String(o.porque).slice(0,600);
+  return o;
+}
+
 async function clasificar(texto, hoy){
   if(!CLAVE_IA) throw new Error('Falta la clave de Claude (ANTHROPIC_API_KEY)');
   const r = await fetch('https://api.anthropic.com/v1/messages',{
@@ -521,7 +554,8 @@ async function clasificar(texto, hoy){
   }
   const uso = (d.content||[]).find(b => b.type === 'tool_use');
   if(!uso) throw new Error('Claude no devolvió una clasificación');
-  return { ...uso.input, gasto: d.usage || null };
+  /* NUNCA se devuelve crudo lo que dijo el modelo: primero se sanea (ver arriba). */
+  return { ...sanearClasificacion(uso.input), gasto: d.usage || null };
 }
 
 /* ============================================================
@@ -539,6 +573,50 @@ async function clasificar(texto, hoy){
    ============================================================ */
 const SEDES = ['lomas','elite','segurola','adefinir'];
 const HORAS = ['6:00','7:00','8:00','9:00','10:00','11:00','12:00','13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00','21:00'];
+
+/* ============================================================
+   GUARDA DE HORA — el falso presente
+
+   Caso real (24/8): a Elio se le ofreció las 15:00 y contestó "Mañana 17 hs
+   puedo !". El clasificador lo leyó como `confirma` y quedó VERDE: se cobra una
+   clase a la que no fue. En realidad está pidiendo OTRO horario.
+
+   El modelo no puede darse cuenta solo porque NO sabe qué hora le ofrecimos: ve
+   el texto y nada más. Pero nosotros sí sabemos la hora, porque la clase ya se
+   ubicó. Así que esto se decide por CÓDIGO, no por IA: si el alumno nombra una
+   hora explícita y NINGUNA coincide con la de su clase, es un pedido.
+
+   Solo actúa cuando está segura. Si no nombró hora, si no se pudo ubicar la
+   clase, o si alguna hora coincide, no toca nada.
+   ============================================================ */
+function horasMencionadas(texto){
+  const t = String(texto||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  const out = new Set();
+  const empujar = (n, tarde) => {
+    if(!Number.isFinite(n) || n < 0 || n > 23) return;
+    /* La academia entrena de 6:00 a 21:00: un "5" es las 17:00, no las 5 de la mañana. */
+    if(tarde && n >= 1 && n <= 11) n += 12;
+    else if(n >= 1 && n <= 5) n += 12;
+    if(n >= 6 && n <= 21) out.add(n);
+  };
+  for(const m of t.matchAll(/\b(\d{1,2}):(\d{2})\b/g)) empujar(+m[1], false);
+  for(const m of t.matchAll(/\b(\d{1,2})\s*(?:hs|hrs|horas|hora|h)\b/g)) empujar(+m[1], false);
+  /* Exige una marca de hora ("hs", ":00", "a las N"): sin esto, "podemos entrenar
+     entre 4" (son 4 PERSONAS) se leería como las 4 en punto. */
+  for(const m of t.matchAll(/\ba\s+las?\s+(\d{1,2})\b([^.]{0,20})/g)) empujar(+m[1], /tarde|noche/.test(m[2]||''));
+  return [...out];
+}
+/* Devuelve {dichas, suyas} si el alumno nombró SOLO horas distintas a las de su
+   clase. null en cualquier otro caso (o sea: no hay motivo para desconfiar). */
+function horaQueNoEsLaSuya(texto, ubic){
+  if(!ubic || !ubic.ok || !Array.isArray(ubic.clases) || !ubic.clases.length) return null;
+  const dichas = horasMencionadas(texto);
+  if(!dichas.length) return null;
+  const suyas = ubic.clases.map(c => parseInt(HORAS[c.horaIdx], 10)).filter(Number.isFinite);
+  if(!suyas.length) return null;
+  if(dichas.some(h => suyas.includes(h))) return null;      // nombró la suya: confirma de verdad
+  return { dichas, suyas };
+}
 
 /* La misma limpieza que usa el calendario. Si limpiara distinto, encontraría
    clases que el calendario después no encuentra, y no aplicaría nada. */
@@ -917,6 +995,38 @@ app.post('/webhooks/whatsapp', (req,res) => {
       const t = fila.clasi && fila.clasi.tipo;
       const anotable = t && t !== 'nada';
 
+      /* (2b) NO ESTÁ EN EL PADRÓN, PERO HOY LE MANDAMOS LA CONFIRMACIÓN.
+         El padrón sale de alumnos_v1 (el espejo de la hoja ALUMNOS) y solo entra
+         quien tiene el teléfono cargado ahí. Si falta —espejo viejo, teléfono en
+         blanco o escrito distinto— el alumno confirmaba y el mensaje moría con
+         "no está en el padrón": clasificado bien, pero sin nombre no hay renglón
+         y nunca se pintaba el verde (pasó con Joaquín, Veronica y Jorge el 24/8).
+
+         Pero SÍ sabemos quién es: la lista de enviados guarda a nombre de quién
+         mandamos la confirmación a ese número hoy. Es el dato más fuerte que hay
+         —más que el nombre del contacto de WhatsApp, que suele ser "Fulana Mamá
+         de Mengano"—.
+
+         SOLO para confirmaciones y solo si la lista nombra a UNA persona. Un
+         verde mal puesto se saca con un clic; una cancelación saca a alguien de
+         la grilla y cuesta una clase. Mismo criterio que el desempate de abajo. */
+      if(t === 'confirma' && fila.quien && !fila.quien.encontrado && !fila.quien.varios
+         && !fila.clasi.sobreOtraPersona){
+        try{
+          const lista = await listaEnviados(hoyAsuncion());
+          const aQuien = lista ? lista.get(soloDigitos8(msg.tel)) : null;
+          if(aQuien && typeof aQuien === 'string'){
+            const nombres = aQuien.split('|').map(s=>s.trim()).filter(Boolean);
+            if(nombres.length === 1){
+              fila.quien = { encontrado:true, alumno:{ nombre:nombres[0] },
+                             candidatos:[], porLaListaDeEnviados:true };
+              totales.porListaEnviados = (totales.porListaEnviados||0) + 1;
+              if(totales.sinAlumno > 0) totales.sinAlumno--;
+            }
+          }
+        }catch(e){ fila.errorFallbackLista = e.message; }
+      }
+
       /* (3) ÚLTIMO DESEMPATE PARA UN NÚMERO COMPARTIDO DE VERDAD: la grilla.
          Si de los dos hermanos que comparten el teléfono uno solo tiene clase
          el día por el que se preguntó, el que contestó "dale" fue ese.
@@ -1027,6 +1137,8 @@ app.post('/webhooks/whatsapp', (req,res) => {
              convertirla la dejaría sin sede y el calendario no la aplicaría. */
           let tipoLibreta = t;
           let porQue = '';
+          /* ¿Nombró una hora que no es la de su clase? (guarda del falso presente) */
+          if(t === 'confirma') fila.horaOtra = horaQueNoEsLaSuya(msg.texto, fila.ubic);
           if(fila.clasi.sobreOtraPersona && (t === 'confirma' || t === 'cancela')){
             tipoLibreta = 'pedido';
             porQue = 'El mensaje habla de otra persona. Parecía '+t+', pero no se aplicó: decide una persona.';
@@ -1035,6 +1147,16 @@ app.post('/webhooks/whatsapp', (req,res) => {
             tipoLibreta = 'pedido';
             porQue = 'Avisó que NO viene. No se sacó de la grilla a propósito: mirá el mensaje y sacalo vos si corresponde.';
             totales.cancelCeleste++;
+          } else if(t === 'confirma' && fila.horaOtra){
+            /* 3. NOMBRÓ UNA HORA QUE NO ES LA SUYA. Parecía una confirmación, pero
+               está pidiendo otro horario: si quedara verde se cobraría una clase a
+               la que no va a ir (pasó con Elio el 24/8: ofrecida 15:00, contestó
+               "17 hs puedo"). Se manda a celeste para que lo resuelva una persona. */
+            tipoLibreta = 'pedido';
+            porQue = 'Dijo que puede a las '+fila.horaOtra.dichas.map(h=>h+':00').join(' o ')+
+                     ', pero su clase es a las '+fila.horaOtra.suyas.map(h=>h+':00').join(' y ')+
+                     '. No se marcó presente: está pidiendo otro horario.';
+            totales.horaDistinta = (totales.horaDistinta||0) + 1;
           }
           if(tipoLibreta !== t) fila.tipoOriginal = t;
           fila.tipoLibreta = tipoLibreta;
@@ -1201,7 +1323,8 @@ app.get('/', (req,res) => {
         (q.porNombreDelContacto?' <span class="pin">resuelto por el nombre del contacto</span>':'')+
         (q.mismaPersona?' <span class="pin">varias fichas de la misma persona</span>':'')+
         (q.porLaConfirmacion?' <span class="pin">le mandamos la confirmación a '+esc(q.porLaConfirmacion)+'</span>':'')+
-        (q.porLaClase?' <span class="pin">resuelto por la clase del '+esc(q.fechaDesempate||'')+'</span>':'')
+        (q.porLaClase?' <span class="pin">resuelto por la clase del '+esc(q.fechaDesempate||'')+'</span>':'')+
+        (q.porLaListaDeEnviados?' <span class="pin">no está en el padrón — resuelto por la lista de enviados</span>':'')
       : (q.varios
           ? '<span class="alerta">número compartido — '+q.candidatos.length+' candidatos:</span> '+esc(q.candidatos.map(x=>x.nombre).join(', '))+
             (r.notaCompartido?'<div class="por">'+esc(r.notaCompartido)+'</div>':'')
@@ -1570,5 +1693,5 @@ function _seedPruebaCompartido(seed){
   if(seed && seed.porTel){ _padron = { porTel: seed.porTel }; _padronTs = Date.now(); }
   if(seed && seed.enviados){ _enviados = { hasta: Date.now() + 3600000, set: seed.enviados }; }
 }
-export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba, leerEstadoEntrega, claveEntrega, resumenEntregas, claveConfirmacion, filtrarYaEnviados, quienEs, _seedPruebaCompartido };
+export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba, leerEstadoEntrega, claveEntrega, resumenEntregas, claveConfirmacion, filtrarYaEnviados, quienEs, _seedPruebaCompartido, fechaValida, sanearClasificacion, horasMencionadas, horaQueNoEsLaSuya, HORAS };
 export default app;
