@@ -1569,6 +1569,227 @@ function filtrarYaEnviados(lista, yaEnviados){
   return { aEnviar, saltados };
 }
 
+/* ============================================================
+   EL CIERRE DEL DÍA — 23:30
+
+   QUÉ ES
+   Todas las noches se toma la foto del día que se armó en la vista de profes
+   (el nodo dia/<fecha>) y se guarda como el registro contable del día en
+   historial_v2/<fecha>. De ahí leen Caja y Ganancias para pagarle a los profes
+   y para cobrarle a los alumnos.
+
+   POR QUÉ EXISTE
+   Antes esto era un botón que alguien tenía que apretar en el calendario. Se
+   sacó el 1 de agosto de 2026 dando por hecho que "el día se cierra solo a las
+   23:00", y ese cierre automático NUNCA existió: del 11 de agosto en adelante
+   no se cerró un solo día y Caja se quedó sin con qué pagar. Además el nodo
+   dia/ guarda solo hoy y dos días atrás, así que lo que no se cierra a tiempo
+   se pierde para siempre.
+
+   POR QUÉ ACÁ Y NO EN EL NAVEGADOR
+   Porque el navegador no está garantizado: si esa noche nadie abre el
+   calendario, no se cierra nada. Este servidor corre siempre.
+
+   POR QUÉ 23:30 Y NO 23:00
+   Media hora más para que los profes terminen de corregir la asistencia de la
+   última clase.
+
+   LA REGLA DEL COBRO (la de siempre)
+   · Vino                              → se cobra
+   · Faltó y estaba confirmado         → SE COBRA (dijo que venía)
+   · Faltó y tenía los ojitos 👀       → no se cobra (nunca confirmó)
+   Si después administración decide que a uno de esos igual no se le cobra, lo
+   cambia en Caja: la bolsa de esa hora se recalcula sola y baja para todos los
+   profes que dieron clase esa hora ese día.
+   ============================================================ */
+
+const SEDE_NICE = { lomas:'LOMAS', elite:'ELITE', segurola:'SEGUROLA', adefinir:'A DEFINIR' };
+
+/* El padrón indexado por NOMBRE. El padron() de arriba está indexado por
+   teléfono, que es lo que necesita WhatsApp; acá hace falta al revés, para
+   completar el tipo de clase y el ID del alumno. */
+let _padNom = null, _padNomTs = 0;
+async function padronPorNombre(){
+  if(_padNom && Date.now()-_padNomTs < 10*60*1000) return _padNom;
+  const paq = await leerFirebase('alumnos_v1');
+  if(!paq || !paq.csv) throw new Error('No encontré la copia del padrón');
+  const filas = partirCSV(paq.csv);
+  let hr=-1, iNom=-1, iId=-1, iTipo=-1;
+  for(let r=0;r<Math.min(filas.length,12);r++){
+    const h = filas[r].map(x=>String(x||'').toLowerCase().trim());
+    let n=-1,d=-1,p=-1;
+    h.forEach((x,i)=>{
+      if(n<0 && (x==='alumnos'||x==='alumno'||x.includes('nombre'))) n=i;
+      if(d<0 && (x==='id'||x.includes('id alumno'))) d=i;
+      if(p<0 && x.includes('tipo')) p=i;
+    });
+    if(n>=0){ hr=r; iNom=n; iId=d; iTipo=p; break; }
+  }
+  const mapa = {};
+  if(hr>=0){
+    for(let i=hr+1;i<filas.length;i++){
+      const nombre=(filas[i][iNom]||'').trim();
+      if(!nombre) continue;
+      const k=claveNombre(nombre);
+      if(!k || mapa[k]) continue;
+      mapa[k] = { id: iId>=0?(filas[i][iId]||'').trim():'', tipo: iTipo>=0?(filas[i][iTipo]||'').trim():'' };
+    }
+  }
+  _padNom = mapa; _padNomTs = Date.now();
+  return mapa;
+}
+
+/* Arma las filas del día. Diez columnas, las de siempre:
+   Fecha · Alumno · Hora · Sede · Profe · Tipo · Estado · Cobro · Motivo · ID */
+async function armarFilasDelDia(fecha, diaDado, padDado){
+  const dia = diaDado || await leerFirebase('dia/' + fecha);
+  if(!dia) return { filas: [], avisos: [], vacio: true };
+  const pad = padDado || await padronPorNombre().catch(() => ({}));
+
+  const filas = [];
+  const avisos = [];
+
+  for(const sede of SEDES){
+    const recs = dia[sede];
+    if(!recs || typeof recs !== 'object') continue;
+
+    for(const rec of Object.values(recs)){
+      if(!rec || typeof rec !== 'object' || !rec.nombre) continue;
+      if(rec.borrado) continue;                          // el profe lo sacó del día
+      if(/ALMUERZO/i.test(rec.nombre)) continue;         // no es una clase
+
+      const hora  = HORAS[rec.horaIdx] || '';
+      const sedeN = SEDE_NICE[sede] || sede.toUpperCase();
+
+      /* EL PROFE AYUDANTE. En la columna Profe va EL QUE AYUDA: ese es el campo
+         con el que Caja arma el reparto de la bolsa, así que ahí se define quién
+         cobra. No se le cobra a nadie y no aporta al pozo; solo deja constancia
+         de que ese profe trabajó esa hora. */
+      if(rec.ayudante){
+        filas.push([fecha, 'AYUDANTE', hora, sedeN, rec.ayudante, 'AYUDA', 'Ayudante', '—',
+                    'ayuda a ' + (rec.titular || rec.profe || ''), '']);
+        continue;
+      }
+
+      /* ALTO RENDIMIENTO. El bloque con lista adentro se abre en una fila por
+         alumno: son clases de verdad, se cobran y aportan a la bolsa. El tipo
+         dice la duración (AR60 / AR30), que es lo que define cuánto aporta. */
+      if(rec.mod === 'BLOQUE' || /ALTO RENDIMIENTO/i.test(rec.nombre)){
+        const lista = (rec.lista && rec.lista.length) ? rec.lista : null;
+        if(lista && /ALTO RENDIMIENTO/i.test(rec.nombre)){
+          const tipoAR = (Number(rec.dur) === 30) ? 'AR30' : 'AR60';
+          const marc = rec.arAsis || {};
+          for(const nomAl of lista){
+            const clave = String(nomAl).replace(/[.#$/\[\]]/g, '_');
+            const falto = marc[nomAl] === 'ausente' || marc[clave] === 'ausente';
+            filas.push([fecha, nomAl, hora, sedeN, rec.profe || '', tipoAR,
+                        falto ? 'Ausente (avisó)' : 'Presente',
+                        falto ? 'No' : 'Sí',
+                        falto ? 'alto rendimiento · faltó' : 'alto rendimiento',
+                        (pad[claveNombre(nomAl)] || {}).id || '']);
+          }
+          continue;
+        }
+        filas.push([fecha, 'ALTO RENDIMIENTO', hora, sedeN, rec.profe || '', 'AR', 'Bloque', '—', '', '']);
+        continue;
+      }
+
+      const ficha = pad[claveNombre(rec.nombre)] || {};
+      /* EL TIPO DE CLASE decide cuánto aporta el alumno a la bolsa de la hora.
+         Los acoples vienen sin tipo desde la vista de profes, y sin tipo el
+         alumno aporta CERO y el profe cobra de menos. Por eso, si no viene, se
+         busca en el padrón. */
+      const tipo = rec.mod || ficha.tipo || '';
+      if(!tipo) avisos.push(rec.nombre + ' (' + hora + ' ' + sedeN + ') quedó sin tipo de clase');
+
+      if(rec.asis === 'ausente'){
+        /* LA REGLA: con ojitos no se cobra, sin ojitos sí. Los ojitos 👀 son la
+           marca de "falta confirmar". Si el alumno nunca confirmó y no vino, no
+           se le cobra; si estaba confirmado y no vino, se cobra igual. */
+        const confirmado = !!rec.confirmado;
+        filas.push([fecha, rec.nombre, hora, sedeN, rec.profe || '', tipo,
+                    confirmado ? 'Ausente (no avisó)' : 'Ausente (avisó)',
+                    confirmado ? 'Sí' : 'No',
+                    confirmado ? 'faltó estando confirmado' : 'faltó sin confirmar (ojitos)',
+                    ficha.id || '']);
+      } else {
+        filas.push([fecha, rec.nombre, hora, sedeN, rec.profe || '', tipo,
+                    rec.acople ? 'Presente (acople)' : 'Presente', 'Sí', '',
+                    ficha.id || '']);
+      }
+    }
+  }
+
+  return { filas, avisos, vacio: filas.length === 0 };
+}
+
+/* Cierra un día y lo deja guardado. No pisa un día ya cerrado salvo que se pida
+   a propósito: si se cerrara dos veces sin querer se perderían las correcciones
+   que administración hizo encima. */
+async function cerrarDia(fecha, opciones){
+  const forzar = !!(opciones && opciones.forzar);
+  const yaEsta = await leerFirebase('historial_v2/' + fecha).catch(() => null);
+  if(yaEsta && yaEsta.filas && !forzar){
+    return { ok:true, saltado:true, fecha, filas:(yaEsta.filas || []).length,
+             motivo:'ese día ya estaba cerrado' };
+  }
+
+  const r = await armarFilasDelDia(fecha);
+  if(r.vacio) return { ok:true, saltado:true, fecha, filas:0, motivo:'no hay clases ese día' };
+
+  await guardarEnFirebase('historial_v2/' + fecha, {
+    filas: r.filas,
+    cerrado: new Date().toISOString(),
+    por: 'agente',
+    version: VERSION
+  });
+
+  if(r.avisos.length){
+    console.log('cierre ' + fecha + ': ' + r.avisos.length + ' sin tipo de clase -> ' + r.avisos.slice(0,5).join(' · '));
+  }
+  console.log('Dia cerrado: ' + fecha + ' · ' + r.filas.length + ' filas');
+  return { ok:true, fecha, filas:r.filas.length, sinTipo:r.avisos.length };
+}
+
+/* EL RELOJ. Se mira la hora de Asunción cada minuto y se cierra el día una sola
+   vez, la primera vez que se pasa de las 23:30. Antes de escribir se relee
+   Firebase, así que un reinicio de Railway a las 23:35 no dispara un segundo
+   cierre ni deja el día sin cerrar. */
+const HORA_CIERRE = '23:30';
+let _ultimoCierre = '';
+async function relojDeCierre(){
+  try{
+    const fecha = hoyAsuncion();
+    const hora  = horaAsuncion();
+    if(hora < HORA_CIERRE) return;
+    if(_ultimoCierre === fecha) return;
+    _ultimoCierre = fecha;
+    const r = await cerrarDia(fecha);
+    if(!r.saltado) console.log('cierre automatico: ' + JSON.stringify(r));
+  }catch(e){
+    _ultimoCierre = '';                 // que lo reintente en el próximo minuto
+    console.warn('cierre automatico fallo:', e.message);
+  }
+}
+setInterval(relojDeCierre, 60 * 1000);
+
+/* A mano, por si hay que rehacer un día o cerrar uno que quedó abierto.
+   Pide la misma clave que el resto de los endpoints. */
+app.post('/cerrar-dia', async (req, res) => {
+  try{
+    const clave = (req.body && req.body.clave) || req.query.clave || '';
+    if(!AGENTE_PASSWORD || clave !== AGENTE_PASSWORD)
+      return res.status(401).json({ ok:false, error:'clave incorrecta' });
+    const fecha  = (req.body && req.body.fecha) || req.query.fecha || hoyAsuncion();
+    const forzar = String((req.body && req.body.forzar) || req.query.forzar || '') === '1';
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha))
+      return res.status(400).json({ ok:false, error:'fecha inválida, va como 2026-08-25' });
+    res.json(await cerrarDia(fecha, { forzar }));
+  }catch(e){
+    res.status(500).json({ ok:false, error:e.message });
+  }
+});
+
 app.post('/enviar-confirmaciones', async (req,res) => {
   try{
     const clave = (req.body && req.body.clave) || req.query.clave || '';
@@ -1693,5 +1914,5 @@ function _seedPruebaCompartido(seed){
   if(seed && seed.porTel){ _padron = { porTel: seed.porTel }; _padronTs = Date.now(); }
   if(seed && seed.enviados){ _enviados = { hasta: Date.now() + 3600000, set: seed.enviados }; }
 }
-export { clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba, leerEstadoEntrega, claveEntrega, resumenEntregas, claveConfirmacion, filtrarYaEnviados, quienEs, _seedPruebaCompartido, fechaValida, sanearClasificacion, horasMencionadas, horaQueNoEsLaSuya, HORAS };
+export { armarFilasDelDia, cerrarDia, padronPorNombre, clasificar, claveNombre, colapsarHorasSeguidas, decidirPedido, sumarDias, hoyAsuncion, REGLAS, VERSION, diaDeFecha, diasEntreISO, ubicarEnSemana, _cacheCalendarioPrueba, leerEstadoEntrega, claveEntrega, resumenEntregas, claveConfirmacion, filtrarYaEnviados, quienEs, _seedPruebaCompartido, fechaValida, sanearClasificacion, horasMencionadas, horaQueNoEsLaSuya, HORAS };
 export default app;
