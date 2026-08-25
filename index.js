@@ -1598,8 +1598,12 @@ function filtrarYaEnviados(lista, yaEnviados){
    · Vino                              → se cobra
    · Faltó y estaba confirmado         → SE COBRA (dijo que venía)
    · Faltó y tenía los ojitos 👀       → no se cobra (nunca confirmó)
-   Si después administración decide que a uno de esos igual no se le cobra, lo
-   cambia en Caja: la bolsa de esa hora se recalcula sola y baja para todos los
+   · Nunca confirmó, nadie lo marcó    → no se cobra ("Sin confirmar")
+   El último es el que más pesa: `asis` arranca en 'presente' para todos cuando
+   se publica el día, así que "presente" solo quiere decir que nadie lo tocó.
+   Los ojitos son la única señal real de que el alumno no dijo que venía.
+   Si después administración decide que a uno de esos igual se le cobra, lo
+   cambia en Caja: la bolsa de esa hora se recalcula sola y sube para todos los
    profes que dieron clase esa hora ese día.
    ============================================================ */
 
@@ -1625,18 +1629,44 @@ async function padronPorNombre(){
     });
     if(n>=0){ hr=r; iNom=n; iId=d; iTipo=p; break; }
   }
+  /* ============================================================
+     LOS PARES A PROPÓSITO: "Rodrigo Lee INDIVIDUAL" y "Rodrigo Lee GRUPAL"
+
+     En el padrón hay ~20 alumnos cargados DOS veces a propósito, uno por cada
+     tipo de clase que hacen, cada uno con su ID y su precio. claveNombre() les
+     borra el sufijo (INDIVIDUAL / GRUPAL / DUAL) y los dos caían en la misma
+     clave: el segundo se descartaba y TODAS las clases salían con el ID del
+     primero. Caja después busca por el ID, así que le cobraba las grupales al
+     precio de la individual. Medido contra 14 días reales: 13 alumnos, Gs
+     1.330.000 de más — Rodrigo y Romina Lee, Gs 540.000 cada uno.
+
+     El arreglo: cada ficha se guarda DOS veces, por el nombre completo y por la
+     clave corta, y el nombre completo gana al buscar. Así "Rodrigo Lee GRUPAL"
+     encuentra su propia ficha, y un nombre sin sufijo sigue cayendo en la clave
+     corta como antes.
+     ============================================================ */
   const mapa = {};
   if(hr>=0){
     for(let i=hr+1;i<filas.length;i++){
       const nombre=(filas[i][iNom]||'').trim();
       if(!nombre) continue;
-      const k=claveNombre(nombre);
-      if(!k || mapa[k]) continue;
-      mapa[k] = { id: iId>=0?(filas[i][iId]||'').trim():'', tipo: iTipo>=0?(filas[i][iTipo]||'').trim():'' };
+      const ficha = { id: iId>=0?(filas[i][iId]||'').trim():'', tipo: iTipo>=0?(filas[i][iTipo]||'').trim():'' };
+      const exacta = normNombre(nombre);
+      if(exacta && !mapa[exacta]) mapa[exacta] = ficha;
+      const corta = claveNombre(nombre);
+      if(corta && !mapa[corta]) mapa[corta] = ficha;
     }
   }
   _padNom = mapa; _padNomTs = Date.now();
   return mapa;
+}
+
+/* La ficha de un alumno: primero por el nombre tal cual está escrito en la
+   grilla, y recién si no aparece, por la clave corta. El orden importa — ver el
+   comentario de los pares acá arriba. */
+function fichaDelPadron(pad, nombre){
+  if(!pad || !nombre) return {};
+  return pad[normNombre(nombre)] || pad[claveNombre(nombre)] || {};
 }
 
 /* Arma las filas del día. Diez columnas, las de siempre:
@@ -1686,7 +1716,7 @@ async function armarFilasDelDia(fecha, diaDado, padDado){
                         falto ? 'Ausente (avisó)' : 'Presente',
                         falto ? 'No' : 'Sí',
                         falto ? 'alto rendimiento · faltó' : 'alto rendimiento',
-                        (pad[claveNombre(nomAl)] || {}).id || '']);
+                        fichaDelPadron(pad, nomAl).id || '']);
           }
           continue;
         }
@@ -1694,7 +1724,7 @@ async function armarFilasDelDia(fecha, diaDado, padDado){
         continue;
       }
 
-      const ficha = pad[claveNombre(rec.nombre)] || {};
+      const ficha = fichaDelPadron(pad, rec.nombre);
       /* EL TIPO DE CLASE decide cuánto aporta el alumno a la bolsa de la hora.
          Los acoples vienen sin tipo desde la vista de profes, y sin tipo el
          alumno aporta CERO y el profe cobra de menos. Por eso, si no viene, se
@@ -1711,6 +1741,31 @@ async function armarFilasDelDia(fecha, diaDado, padDado){
                     confirmado ? 'Ausente (no avisó)' : 'Ausente (avisó)',
                     confirmado ? 'Sí' : 'No',
                     confirmado ? 'faltó estando confirmado' : 'faltó sin confirmar (ojitos)',
+                    ficha.id || '']);
+      } else if(!rec.confirmado){
+        /* ============================================================
+           EL QUE NUNCA CONFIRMÓ NO SE COBRA — la regla de siempre.
+
+           El cierre viejo (el de la planilla) le ponía "Sin confirmar → cobro
+           No" al que tenía los ojitos 👀, aunque nadie lo hubiera marcado
+           ausente. Y esa distinción importa: `asis` arranca en 'presente' para
+           TODO el mundo cuando el calendario publica el día, así que "presente"
+           no quiere decir que vino — quiere decir que nadie lo tocó. En 14 días
+           reales hay 4 ausencias marcadas sobre 1.223 clases: los profes casi
+           nunca marcan.
+
+           Sin este renglón el cierre le cobra a los 192 que no confirmaron
+           (15,7% de las clases, Gs ~19.200.000 por quincena) a gente a la que
+           hoy no se le cobra. Decisión de José, 25/08/2026: se mantiene la
+           regla vieja, subir el cierre no cambia ninguna factura.
+
+           Ojo: hoy no hay forma de distinguir "el profe lo marcó presente" de
+           "nadie lo tocó", porque las dos cosas escriben asis:'presente'. Si
+           algún día la tablet marca el presente de verdad, este renglón tiene
+           que mirar esa marca antes que `confirmado`.
+           ============================================================ */
+        filas.push([fecha, rec.nombre, hora, sedeN, rec.profe || '', tipo,
+                    'Sin confirmar', 'No', 'nunca confirmó (ojitos)',
                     ficha.id || '']);
       } else {
         filas.push([fecha, rec.nombre, hora, sedeN, rec.profe || '', tipo,
@@ -1757,6 +1812,42 @@ async function cerrarDia(fecha, opciones){
    cierre ni deja el día sin cerrar. */
 const HORA_CIERRE = '23:30';
 let _ultimoCierre = '';
+
+/* ============================================================
+   LOS DÍAS QUE QUEDARON ABIERTOS
+
+   El reloj miraba SOLO el día de hoy. Si a las 23:30 Railway estaba
+   reiniciando, o dormido, o sin red, ese día no se cerraba nunca y nadie se
+   enteraba: no hay aviso ni reintento. Y `dia/<fecha>` lo borra el calendario a
+   los 2 días (limpiarDiasViejos), así que la ventana para darse cuenta era de
+   48 horas. Pasada esa ventana el día no se puede reconstruir: es la misma
+   falla que dejó Caja sin nada del 11 al 25 de agosto, con otra cara.
+
+   Ahora, cada vez que el reloj cierra el día, mira también los DOS anteriores y
+   cierra el que haya quedado abierto. Dos y no más porque más atrás el nodo
+   `dia/` ya no existe y no habría con qué. cerrarDia() no pisa un día ya
+   cerrado, así que repasarlos no cuesta nada ni borra correcciones.
+   ============================================================ */
+const DIAS_QUE_SE_REPASAN = 2;
+async function repasarDiasAbiertos(hasta){
+  const rezagados = [];
+  for(let i = 1; i <= DIAS_QUE_SE_REPASAN; i++){
+    const f = sumarDias(hasta, -i);
+    try{
+      const r = await cerrarDia(f);
+      /* saltado con motivo "ya estaba cerrado" o "no hay clases" es lo normal:
+         solo interesa avisar cuando de verdad se rescató un día. */
+      if(!r.saltado){
+        rezagados.push(r);
+        console.warn('CIERRE RECUPERADO: ' + f + ' había quedado abierto · ' + r.filas + ' filas');
+      }
+    }catch(e){
+      console.warn('no pude repasar el ' + f + ':', e.message);
+    }
+  }
+  return rezagados;
+}
+
 async function relojDeCierre(){
   try{
     const fecha = hoyAsuncion();
@@ -1766,6 +1857,9 @@ async function relojDeCierre(){
     _ultimoCierre = fecha;
     const r = await cerrarDia(fecha);
     if(!r.saltado) console.log('cierre automatico: ' + JSON.stringify(r));
+    /* Va después del día de hoy y aparte: si el repaso falla, el cierre de hoy
+       ya está guardado. */
+    await repasarDiasAbiertos(fecha);
   }catch(e){
     _ultimoCierre = '';                 // que lo reintente en el próximo minuto
     console.warn('cierre automatico fallo:', e.message);
