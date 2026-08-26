@@ -1374,6 +1374,27 @@ app.get('/diag-cal', async (req,res) => {
   }catch(e){ res.json({ puedeLeerCalendario:false, error:e.message }); }
 });
 
+/* Diagnóstico: ¿el agente puede leer el PADRON MAESTRO (padron_v1)?
+   Desde etapa-5.4 el tipo de clase y el ID salen de ahí, y la planilla solo
+   rellena. Si Firebase le negara la lectura, el agente caería a la planilla en
+   silencio y nadie se enteraría. Devuelve solo contadores: no expone el
+   teléfono ni el nombre de nadie. */
+app.get('/diag-padron', async (req,res) => {
+  try{
+    const p = await padron();
+    const pad = await padronPorNombre();
+    res.json({
+      leeElMaestro: p.delMaestro > 0,
+      delMaestro: p.delMaestro,
+      soloEnLaPlanilla: p.rellenados,
+      numerosConDueno: Object.keys(p.porTel).length,
+      clavesPorNombre: Object.keys(pad).length,
+      conTipo: Object.values(pad).filter(f => f && f.tipo).length,
+      conId:   Object.values(pad).filter(f => f && f.id).length
+    });
+  }catch(e){ res.json({ leeElMaestro:false, error:e.message }); }
+});
+
 /* ---------- REPORTE DE ENTREGAS ----------
    Lo llama el calendario después de un envío por Meta para mostrar a quién NO le
    llegó de verdad (falló) y a quién Meta aceptó pero nunca confirmó la entrega.
