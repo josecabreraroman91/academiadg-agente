@@ -1742,32 +1742,43 @@ async function armarFilasDelDia(fecha, diaDado, padDado){
                     confirmado ? 'Sí' : 'No',
                     confirmado ? 'faltó estando confirmado' : 'faltó sin confirmar (ojitos)',
                     ficha.id || '']);
-      } else if(!rec.confirmado){
+      } else if(rec.asis === 'presente'){
         /* ============================================================
-           EL QUE NUNCA CONFIRMÓ NO SE COBRA — la regla de siempre.
+           EL PROFE DIJO QUE VINO → SE COBRA, HAYA CONFIRMADO O NO.
 
-           El cierre viejo (el de la planilla) le ponía "Sin confirmar → cobro
-           No" al que tenía los ojitos 👀, aunque nadie lo hubiera marcado
-           ausente. Y esa distinción importa: `asis` arranca en 'presente' para
-           TODO el mundo cuando el calendario publica el día, así que "presente"
-           no quiere decir que vino — quiere decir que nadie lo tocó. En 14 días
-           reales hay 4 ausencias marcadas sobre 1.223 clases: los profes casi
-           nunca marcan.
+           Esta rama no existía y es la que le da sentido a marcar la asistencia.
+           Antes `asis` arrancaba en 'presente' para todo el mundo al publicar el
+           día, así que "presente" no quería decir que el alumno vino: quería
+           decir que nadie lo había tocado. Con las dos cosas mezcladas no había
+           forma de cobrarle al que apareció sin avisar, y el profe daba la clase
+           de gratis.
 
-           Sin este renglón el cierre le cobra a los 192 que no confirmaron
-           (15,7% de las clases, Gs ~19.200.000 por quincena) a gente a la que
-           hoy no se le cobra. Decisión de José, 25/08/2026: se mantiene la
-           regla vieja, subir el cierre no cambia ninguna factura.
-
-           Ojo: hoy no hay forma de distinguir "el profe lo marcó presente" de
-           "nadie lo tocó", porque las dos cosas escriben asis:'presente'. Si
-           algún día la tablet marca el presente de verdad, este renglón tiene
-           que mirar esa marca antes que `confirmado`.
+           Desde el 25/08/2026 el día nace SIN el campo `asis` (ver publicarFecha
+           en cal-unif) y esto solo se cumple cuando un profe tocó "Vino" en la
+           tablet. Por eso pesa más que `confirmado`: es la palabra de quien
+           estuvo en la cancha, contra una confirmación por WhatsApp.
            ============================================================ */
         filas.push([fecha, rec.nombre, hora, sedeN, rec.profe || '', tipo,
-                    'Sin confirmar', 'No', 'nunca confirmó (ojitos)',
+                    rec.acople ? 'Presente (acople)' : 'Presente', 'Sí',
+                    rec.confirmado ? '' : 'vino sin confirmar · lo marcó el profe',
+                    ficha.id || '']);
+      } else if(!rec.confirmado){
+        /* ============================================================
+           NADIE LO MARCÓ Y NUNCA CONFIRMÓ → NO SE COBRA.
+
+           Es la regla del cierre viejo, el de la planilla: "Sin confirmar →
+           cobro No" al que tenía los ojitos 👀. Se mantiene por decisión de
+           José (25/08/2026), así que subir el cierre no cambia ninguna factura.
+
+           Ojo con el orden de las ramas: primero se mira si el profe lo marcó
+           (arriba), y recién después la confirmación. Al revés, marcar "Vino" no
+           serviría para nada.
+           ============================================================ */
+        filas.push([fecha, rec.nombre, hora, sedeN, rec.profe || '', tipo,
+                    'Sin confirmar', 'No', 'nunca confirmó y nadie lo marcó',
                     ficha.id || '']);
       } else {
+        /* Confirmó y nadie lo marcó: se cobra, como siempre. */
         filas.push([fecha, rec.nombre, hora, sedeN, rec.profe || '', tipo,
                     rec.acople ? 'Presente (acople)' : 'Presente', 'Sí', '',
                     ficha.id || '']);
