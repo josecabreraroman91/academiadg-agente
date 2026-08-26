@@ -25,7 +25,7 @@
 /* La versión se muestra en la pantalla y en la dirección de salud. Sirve para
    saber de un vistazo qué está corriendo de verdad, sin tener que adivinar:
    Railway a veces vuelve a levantar una versión vieja y no se nota. */
-const VERSION = 'etapa-5.3';
+const VERSION = 'etapa-5.4';
 
 /* MIENTRAS DURE LA PRUEBA: una cancelación NO saca al alumno de la grilla.
    Se anota como pedido, el calendario pinta la celda de celeste y una persona
@@ -279,46 +279,130 @@ function colaTel(t){
   return d.length >= 8 ? d.slice(-8) : '';
 }
 
-async function padron(){
-  if(_padron && Date.now()-_padronTs < 10*60*1000) return _padron;
-  const paq = await leerFirebase('alumnos_v1');
-  if(!paq || !paq.csv) throw new Error('No encontré la copia del padrón');
+/* ============================================================
+   DE DONDE SALE EL PADRON: MANDA FIREBASE, LA PLANILLA RELLENA
+
+   Hasta el 26/08/2026 el agente leia SOLO `alumnos_v1`, el espejo de la
+   planilla del Drive, y sin red: si faltaba el csv, tiraba. Era el ultimo
+   modulo que cobraba con la planilla — cal-unif, caja, profe-dia,
+   profe-agenda, envios, pausas, alto-rendimiento y nivelacion ya leian
+   `padron_v1`.
+
+   MEDIDO ANTES DE DARLO VUELTA, alumno por alumno:
+     planilla 950 fichas · padron_v1 945
+     telefonos: la planilla 838, Firebase 843 (Firebase tiene MAS)
+     solo 2 numeros estan en la planilla y no en Firebase
+     LOS 38 PARES A PROPOSITO ESTAN COMPLETOS en padron_v1, con su ID y su
+     tipo propio — que era el riesgo grande (ver el comentario de los pares
+     mas abajo).
+
+   POR QUE LA PLANILLA SIGUE RELLENANDO
+   El robot que copia planilla -> padron_v1 no corre desde el 24/08, asi que
+   14 alumnos que Diego anoto a mano todavia viven SOLO en la planilla. Si se
+   sacara hoy, el agente no los reconoceria por WhatsApp ni los cobraria.
+   Cuando esos 14 esten en Firebase, se saca este relleno.
+
+   OJO AL CRUZAR: hay IDs repetidos entre los dos lados apuntando a personas
+   DISTINTAS (A0934, A0935, A0937). Por eso el relleno se decide por NOMBRE
+   normalizado, nunca por ID.
+   ============================================================ */
+
+/* La planilla ya parseada, solo de respaldo. Devuelve [{nombre,tel,id,tipo}]. */
+let _hoja = null, _hojaTs = 0;
+async function filasDeLaPlanilla(){
+  if(_hoja && Date.now()-_hojaTs < 10*60*1000) return _hoja;
+  const paq = await leerFirebase('alumnos_v1').catch(e => {
+    console.warn('alumnos_v1 (respaldo):', e.message); return null;
+  });
+  if(!paq || !paq.csv){ _hoja = []; _hojaTs = Date.now(); return _hoja; }
   const filas = partirCSV(paq.csv);
 
-  /* Los encabezados no están en la fila 1: ahí va el título. Se buscan por
-     nombre, nunca por número de columna, porque además hay columnas ocultas. */
+  /* Los encabezados no estan en la fila 1: ahi va el titulo. Se buscan por
+     nombre, nunca por numero de columna, porque ademas hay columnas ocultas.
+     Primero se busca una fila que tenga nombre Y telefono; si no aparece,
+     alcanza con el nombre. */
   let hr=-1, iNom=-1, iTel=-1, iId=-1, iTipo=-1;
-  for(let r=0;r<Math.min(filas.length,12);r++){
-    const h = filas[r].map(x=>String(x||'').toLowerCase().trim());
-    let n=-1,t=-1,d=-1,p=-1;
-    h.forEach((x,i)=>{
-      if(n<0 && (x==='alumnos'||x==='alumno'||x.includes('nombre'))) n=i;
-      if(t<0 && (x.includes('telefono')||x.includes('teléfono')||x.includes('celular'))) t=i;
-      if(d<0 && (x==='id'||x.includes('id alumno'))) d=i;
-      if(p<0 && x.includes('tipo')) p=i;
-    });
-    if(n>=0 && t>=0){ hr=r; iNom=n; iTel=t; iId=d; iTipo=p; break; }
+  for(const exigirTel of [true, false]){
+    for(let r=0;r<Math.min(filas.length,12);r++){
+      const h = filas[r].map(x=>String(x||'').toLowerCase().trim());
+      let n=-1,t=-1,d=-1,q=-1;
+      h.forEach((x,i)=>{
+        if(n<0 && (x==='alumnos'||x==='alumno'||x.includes('nombre'))) n=i;
+        if(t<0 && (x.includes('telefono')||x.includes('teléfono')||x.includes('celular'))) t=i;
+        if(d<0 && (x==='id'||x.includes('id alumno'))) d=i;
+        if(q<0 && x.includes('tipo')) q=i;
+      });
+      if(n>=0 && (!exigirTel || t>=0)){ hr=r; iNom=n; iTel=t; iId=d; iTipo=q; break; }
+    }
+    if(hr>=0) break;
   }
-  if(hr<0) throw new Error('No encontré las columnas del padrón');
+  const out = [];
+  if(hr>=0){
+    for(let i=hr+1;i<filas.length;i++){
+      const nombre=(filas[i][iNom]||'').trim();
+      if(!nombre) continue;
+      out.push({
+        nombre,
+        tel:  iTel>=0  ? (filas[i][iTel]||'').trim()  : '',
+        id:   iId>=0   ? (filas[i][iId]||'').trim()   : '',
+        tipo: iTipo>=0 ? (filas[i][iTipo]||'').trim() : ''
+      });
+    }
+  }
+  _hoja = out; _hojaTs = Date.now();
+  return out;
+}
+
+/* El maestro, normalizado a la misma forma que la planilla. */
+function fichasDelMaestro(pv){
+  if(!pv || !pv.alumnos) return [];
+  return Object.entries(pv.alumnos).map(([id, a]) => {
+    const nombre = String((a && a.nombre) || '').trim();
+    if(!nombre) return null;
+    return { nombre,
+             tel:  String((a && a.tel)  || '').trim(),
+             id:   String((a && a.id)   || id).trim(),
+             tipo: String((a && a.tipo) || '').trim() };
+  }).filter(Boolean);
+}
+
+async function padron(){
+  if(_padron && Date.now()-_padronTs < 10*60*1000) return _padron;
+  const [pv, hoja] = await Promise.all([
+    leerFirebase('padron_v1').catch(e => {
+      console.warn('padron_v1:', e.message, '- queda la planilla'); return null;
+    }),
+    filasDeLaPlanilla()
+  ]);
 
   const porTel = {};
-  let conTel=0;
-  for(let i=hr+1;i<filas.length;i++){
-    const nombre=(filas[i][iNom]||'').trim();
-    if(!nombre) continue;
-    const tel=(filas[i][iTel]||'').trim();
-    const k=colaTel(tel);
-    if(!k) continue;
+  let conTel = 0;
+  const meter = f => {
+    const k = colaTel(f.tel);
+    if(!k) return;
+    if(!porTel[k]) porTel[k] = [];
+    porTel[k].push(f);
     conTel++;
-    if(!porTel[k]) porTel[k]=[];
-    porTel[k].push({
-      nombre,
-      tel,
-      id:   iId>=0   ? (filas[i][iId]||'').trim()   : '',
-      tipo: iTipo>=0 ? (filas[i][iTipo]||'').trim() : ''
-    });
-  }
-  _padron = { porTel, conTel, actualizado: paq.actualizado||'' };
+  };
+
+  /* 1) EL MAESTRO */
+  const delMaestro = fichasDelMaestro(pv);
+  const yaEsta = new Set();
+  delMaestro.forEach(f => { yaEsta.add(normNombre(f.nombre)); meter(f); });
+
+  /* 2) LA PLANILLA rellena SOLO a los que el maestro no tiene. Si se metiera
+     al mismo alumno dos veces, quienEs() veria dos candidatos con el mismo
+     numero y frenaria creyendo que es un numero compartido. */
+  let rellenados = 0;
+  hoja.forEach(f => {
+    if(yaEsta.has(normNombre(f.nombre))) return;
+    meter(f); rellenados++;
+  });
+
+  if(!Object.keys(porTel).length) throw new Error('No encontré la copia del padrón');
+  if(rellenados) console.log('padrón: '+delMaestro.length+' de padron_v1 + '+rellenados+' que solo están en la planilla');
+
+  _padron = { porTel, conTel, actualizado: '', delMaestro: delMaestro.length, rellenados };
   _padronTs = Date.now();
   return _padron;
 }
@@ -1615,48 +1699,41 @@ const SEDE_NICE = { lomas:'LOMAS', elite:'ELITE', segurola:'SEGUROLA', adefinir:
 let _padNom = null, _padNomTs = 0;
 async function padronPorNombre(){
   if(_padNom && Date.now()-_padNomTs < 10*60*1000) return _padNom;
-  const paq = await leerFirebase('alumnos_v1');
-  if(!paq || !paq.csv) throw new Error('No encontré la copia del padrón');
-  const filas = partirCSV(paq.csv);
-  let hr=-1, iNom=-1, iId=-1, iTipo=-1;
-  for(let r=0;r<Math.min(filas.length,12);r++){
-    const h = filas[r].map(x=>String(x||'').toLowerCase().trim());
-    let n=-1,d=-1,p=-1;
-    h.forEach((x,i)=>{
-      if(n<0 && (x==='alumnos'||x==='alumno'||x.includes('nombre'))) n=i;
-      if(d<0 && (x==='id'||x.includes('id alumno'))) d=i;
-      if(p<0 && x.includes('tipo')) p=i;
-    });
-    if(n>=0){ hr=r; iNom=n; iId=d; iTipo=p; break; }
-  }
+  const [pv, hoja] = await Promise.all([
+    leerFirebase('padron_v1').catch(e => {
+      console.warn('padron_v1:', e.message, '- queda la planilla'); return null;
+    }),
+    filasDeLaPlanilla()
+  ]);
+
   /* ============================================================
      LOS PARES A PROPÓSITO: "Rodrigo Lee INDIVIDUAL" y "Rodrigo Lee GRUPAL"
 
-     En el padrón hay ~20 alumnos cargados DOS veces a propósito, uno por cada
-     tipo de clase que hacen, cada uno con su ID y su precio. claveNombre() les
-     borra el sufijo (INDIVIDUAL / GRUPAL / DUAL) y los dos caían en la misma
+     Hay ~20 alumnos cargados DOS veces a propósito, uno por cada tipo de
+     clase que hacen, cada uno con su ID y su precio. claveNombre() les borra
+     el sufijo (INDIVIDUAL / GRUPAL / DUAL) y los dos caían en la misma
      clave: el segundo se descartaba y TODAS las clases salían con el ID del
      primero. Caja después busca por el ID, así que le cobraba las grupales al
      precio de la individual. Medido contra 14 días reales: 13 alumnos, Gs
      1.330.000 de más — Rodrigo y Romina Lee, Gs 540.000 cada uno.
 
-     El arreglo: cada ficha se guarda DOS veces, por el nombre completo y por la
-     clave corta, y el nombre completo gana al buscar. Así "Rodrigo Lee GRUPAL"
-     encuentra su propia ficha, y un nombre sin sufijo sigue cayendo en la clave
-     corta como antes.
+     El arreglo: cada ficha se guarda DOS veces, por el nombre completo y por
+     la clave corta, y el nombre completo gana al buscar. Los 38 pares están
+     completos en padron_v1, verificado antes de migrar.
      ============================================================ */
   const mapa = {};
-  if(hr>=0){
-    for(let i=hr+1;i<filas.length;i++){
-      const nombre=(filas[i][iNom]||'').trim();
-      if(!nombre) continue;
-      const ficha = { id: iId>=0?(filas[i][iId]||'').trim():'', tipo: iTipo>=0?(filas[i][iTipo]||'').trim():'' };
-      const exacta = normNombre(nombre);
-      if(exacta && !mapa[exacta]) mapa[exacta] = ficha;
-      const corta = claveNombre(nombre);
-      if(corta && !mapa[corta]) mapa[corta] = ficha;
-    }
-  }
+  const poner = (nombre, ficha) => {
+    const exacta = normNombre(nombre);
+    if(exacta && !mapa[exacta]) mapa[exacta] = ficha;
+    const corta = claveNombre(nombre);
+    if(corta && !mapa[corta]) mapa[corta] = ficha;
+  };
+
+  /* 1) EL MAESTRO va primero, así es el que ocupa las claves. */
+  fichasDelMaestro(pv).forEach(f => poner(f.nombre, { id:f.id, tipo:f.tipo }));
+  /* 2) La planilla solo llena los huecos que quedaron. */
+  hoja.forEach(f => poner(f.nombre, { id:f.id, tipo:f.tipo }));
+
   _padNom = mapa; _padNomTs = Date.now();
   return mapa;
 }
