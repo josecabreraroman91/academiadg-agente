@@ -212,7 +212,7 @@ async function guardarEnFirebase(ruta, dato){
    La lista vive en Firebase, en agente_v1/enviados/<fecha>, así que SOBREVIVE a
    un reinicio del servidor. En memoria guardamos una copia por 60 segundos para
    no leer Firebase en cada mensaje. */
-let _enviados = { hasta:0, set:null };
+let _enviados = { hasta:0, set:null, dias:null };
 
 /* Cómo salió la última vez que se intentó guardar la lista de enviados. Se
    muestra en /salud para que un fallo NUNCA vuelva a pasar desapercibido. */
@@ -237,17 +237,59 @@ async function listaEnviados(hoy){
      guardado `true` en vez del nombre y siguen funcionando igual: .has() no
      cambia, y el desempate por nombre simplemente no se activa para esos. */
   const set = new Map();
+  /* Además del Map mezclado, se guarda QUÉ DÍA salió cada envío. Con eso se sabe
+     por qué clase está contestando el alumno (ver diaPorElQuePreguntamos). */
+  const dias = {};
   let ok = false;
   for(const f of [fechaMenosUn(hoy), hoy]){
     try{
       const obj = await leerFirebase('agente_v1/enviados/'+f);
       ok = true;
-      if(obj) Object.keys(obj).forEach(k => set.set(k, obj[k]));
+      if(obj){
+        dias[f] = new Set(Object.keys(obj));
+        Object.keys(obj).forEach(k => set.set(k, obj[k]));
+      }
     }catch(e){}
   }
   if(!ok) return null;
-  _enviados = { hasta: Date.now() + 60000, set };
+  _enviados = { hasta: Date.now() + 60000, set, dias };
   return set;
+}
+
+/* ---------- ¿ES SOLO CORTESÍA? ----------
+   Sirve para decidir qué 'nada' deja rastro y cuál no. Un "gracias" o un "hola"
+   sueltos no son una respuesta que haya que mirar; cualquier otra cosa sí, aunque
+   el agente no la haya entendido. Es la misma limpieza de la regla 11 del
+   criterio, pero hecha por código, porque acá ya no hay a quién preguntarle. */
+function soloCortesia(texto){
+  let t = String(texto||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  t = t.replace(/[\u{1F000}-\u{1FFFF}]/gu,' ').replace(/[☀-➿]/g,' ').replace(/️/g,' ');
+  t = t.replace(/\b(buenas tardes|buenas noches|buenos dias|buen dia|buenas|hola+|profe|que tal|como estas|como esta)\b/g,' ');
+  t = t.replace(/\b(gracias+|muchas gracias|grax|dios te bendiga|abrazo|saludos)\b/g,' ');
+  t = t.replace(/[^a-z0-9]/g,' ').replace(/\s+/g,' ').trim();
+  return t.length === 0;
+}
+
+/* ---------- POR QUÉ CLASE ESTÁ CONTESTANDO ----------
+   La pregunta diaria se manda un día y es SIEMPRE por el día siguiente. Si el
+   alumno contesta al rato, "mañana" es la clase correcta. Pero si contesta
+   TARDE —al otro día, porque recién ahí abrió el WhatsApp— "mañana" ya se corrió
+   un día: el verde le cae en una clase por la que nadie le preguntó, y la clase
+   por la que sí se le preguntó queda sin marcar. Doble error, y el de más se
+   cobra.
+
+   Por eso el día no se cuenta desde HOY, se cuenta desde EL DÍA EN QUE LE
+   MANDAMOS. Devuelve la fecha de la clase por la que se preguntó, o null si no
+   lo sabemos — ahí el que llama sigue haciendo lo de siempre. */
+async function diaPorElQuePreguntamos(tel, hoy){
+  const u8 = soloDigitos8(tel);
+  if(!u8) return null;
+  try{ await listaEnviados(hoy); }catch(e){ return null; }   // llena el cache
+  const dias = _enviados && _enviados.dias;
+  if(!dias) return null;
+  const fechas = Object.keys(dias).filter(f => dias[f] && dias[f].has(u8)).sort();
+  if(!fechas.length) return null;
+  return sumarDias(fechas[fechas.length-1], 1);   // manda el envío más reciente
 }
 
 /* ============================================================
@@ -1079,7 +1121,16 @@ app.post('/webhooks/whatsapp', (req,res) => {
          llenar la libreta de saludos. Sin alumno tampoco: un renglón sin
          nombre no lo puede aplicar nadie. */
       const t = fila.clasi && fila.clasi.tipo;
-      const anotable = t && t !== 'nada';
+      /* UN 'NADA' CON CONTENIDO TAMBIÉN DEJA RASTRO.
+         Hasta el 28/08 un 'nada' no se pintaba NI se anotaba: el alumno contestaba
+         y el mensaje moría ahí, sin que nadie se enterara. Peor que celeste, que al
+         menos se ve. Pasó con tres confirmaciones el 28/08 (ver reglas 14 y 15).
+         Ahora, si el que escribió es alguien a quien le mandamos la confirmación y
+         no es un saludo o un gracias suelto, se anota CELESTE: no aplica nada, solo
+         marca para que una persona lo mire. El saludo suelto se sigue tirando, si no
+         la libreta se llena de "hola". */
+      const nadaConContenido = (t === 'nada') && msg.texto && !soloCortesia(msg.texto);
+      const anotable = t && (t !== 'nada' || nadaConContenido);
 
       /* (2b) NO ESTÁ EN EL PADRÓN, PERO HOY LE MANDAMOS LA CONFIRMACIÓN.
          El padrón sale de alumnos_v1 (el espejo de la hoja ALUMNOS) y solo entra
@@ -1127,7 +1178,9 @@ app.post('/webhooks/whatsapp', (req,res) => {
       if(t === 'confirma' && fila.quien && fila.quien.varios && !fila.clasi.sobreOtraPersona){
         try{
           const hoyD = hoyAsuncion();
-          const fechaMira = fila.clasi.fecha || sumarDias(hoyD,1);
+          /* Mismo criterio que arriba: el día se cuenta desde el envío. */
+          const fechaMira = fila.clasi.fecha ||
+                            (await diaPorElQuePreguntamos(msg.tel, hoyD)) || sumarDias(hoyD,1);
           const conClase = [];
           for(const c of fila.quien.candidatos){
             const u = await ubicarClase(c.nombre, fechaMira);
@@ -1159,7 +1212,18 @@ app.post('/webhooks/whatsapp', (req,res) => {
             if(fila.clasi.fecha){
               fila.ubic = await ubicarClase(fila.quien.alumno.nombre, fila.clasi.fecha);
             } else {
-              fila.ubic = await ubicarClase(fila.quien.alumno.nombre, sumarDias(hoy,1));
+              /* El día por el que se preguntó, contado desde el envío y no desde
+                 hoy: una respuesta que llega al otro día es por la clase de HOY,
+                 no por la de mañana (ver diaPorElQuePreguntamos). Si no lo
+                 sabemos, es mañana, como siempre. */
+              const manana = sumarDias(hoy,1);
+              const preguntado = (await diaPorElQuePreguntamos(msg.tel, hoy)) || manana;
+              fila.ubic = await ubicarClase(fila.quien.alumno.nombre, preguntado);
+              if(preguntado !== manana) fila.diaPreguntado = preguntado;
+              if(!fila.ubic.ok && preguntado !== manana){
+                const ubicMan = await ubicarClase(fila.quien.alumno.nombre, manana);
+                if(ubicMan.ok) fila.ubic = ubicMan;
+              }
               if(!fila.ubic.ok){
                 const ubicHoy = await ubicarClase(fila.quien.alumno.nombre, hoy);
                 if(ubicHoy.ok) fila.ubic = ubicHoy;
@@ -1180,11 +1244,38 @@ app.post('/webhooks/whatsapp', (req,res) => {
             if(fila.clasi.fecha){
               fila.ubic = await ubicarClase(fila.quien.alumno.nombre, fila.clasi.fecha);
             } else {
-              fila.ubic = await ubicarClase(fila.quien.alumno.nombre, sumarDias(hoy,1));
+              /* El día por el que se preguntó, contado desde el envío y no desde
+                 hoy: una respuesta que llega al otro día es por la clase de HOY,
+                 no por la de mañana (ver diaPorElQuePreguntamos). Si no lo
+                 sabemos, es mañana, como siempre. */
+              const manana = sumarDias(hoy,1);
+              const preguntado = (await diaPorElQuePreguntamos(msg.tel, hoy)) || manana;
+              fila.ubic = await ubicarClase(fila.quien.alumno.nombre, preguntado);
+              if(preguntado !== manana) fila.diaPreguntado = preguntado;
+              if(!fila.ubic.ok && preguntado !== manana){
+                const ubicMan = await ubicarClase(fila.quien.alumno.nombre, manana);
+                if(ubicMan.ok) fila.ubic = ubicMan;
+              }
               if(!fila.ubic.ok){
                 const ubicHoy = await ubicarClase(fila.quien.alumno.nombre, hoy);
                 if(ubicHoy.ok) fila.ubic = ubicHoy;
               }
+            }
+          } else if(t === 'nada'){
+            /* Llega acá solo un 'nada' CON CONTENIDO (ver nadaConContenido). Se
+               ubica igual que una confirmación —por la clase que se le preguntó—
+               porque sin sede el calendario no sabe dónde pintar el celeste. */
+            const hoy = hoyAsuncion();
+            const manana = sumarDias(hoy,1);
+            const preguntado = (await diaPorElQuePreguntamos(msg.tel, hoy)) || manana;
+            fila.ubic = await ubicarClase(fila.quien.alumno.nombre, preguntado);
+            if(!fila.ubic.ok && preguntado !== manana){
+              const u = await ubicarClase(fila.quien.alumno.nombre, manana);
+              if(u.ok) fila.ubic = u;
+            }
+            if(!fila.ubic.ok){
+              const ubicHoy = await ubicarClase(fila.quien.alumno.nombre, hoy);
+              if(ubicHoy.ok) fila.ubic = ubicHoy;
             }
           } else if(t === 'pedido'){
             /* En un pedido, la fecha que dijo el alumno es A DÓNDE QUIERE IR,
@@ -1225,7 +1316,11 @@ app.post('/webhooks/whatsapp', (req,res) => {
           let porQue = '';
           /* ¿Nombró una hora que no es la de su clase? (guarda del falso presente) */
           if(t === 'confirma') fila.horaOtra = horaQueNoEsLaSuya(msg.texto, fila.ubic);
-          if(fila.clasi.sobreOtraPersona && (t === 'confirma' || t === 'cancela')){
+          if(t === 'nada'){
+            tipoLibreta = 'pedido';
+            porQue = 'Contestó algo que no entendí. No se aplicó nada: leé el mensaje y resolvelo vos.';
+            totales.nadaCeleste = (totales.nadaCeleste||0) + 1;
+          } else if(fila.clasi.sobreOtraPersona && (t === 'confirma' || t === 'cancela')){
             tipoLibreta = 'pedido';
             porQue = 'El mensaje habla de otra persona. Parecía '+t+', pero no se aplicó: decide una persona.';
             totales.deOtro++;
@@ -1298,7 +1393,8 @@ app.post('/webhooks/whatsapp', (req,res) => {
            cuál de los hermanos es, así que no se pinta verde ni se saca a nadie. */
         try{
           const hoyC = hoyAsuncion();
-          const fMira = (fila.clasi && fila.clasi.fecha) || sumarDias(hoyC,1);
+          const fMira = (fila.clasi && fila.clasi.fecha) ||
+                        (await diaPorElQuePreguntamos(msg.tel, hoyC)) || sumarDias(hoyC,1);
           const cuantos = (fila.quien.candidatos||[]).length;
           const anotadas = [];
           for(const cand of (fila.quien.candidatos||[])){
