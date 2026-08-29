@@ -59,6 +59,9 @@ const CLAVE_IA = process.env.ANTHROPIC_API_KEY || '';
    reglas, no esta clave. */
 const FB_API_KEY = process.env.FIREBASE_API_KEY || 'AIzaSyCwHaVLIoFrXb2NFl9Od6j8LuLvklxpzRc';
 const FB_URL     = 'https://academia-dg-default-rtdb.firebaseio.com';
+/* El login de Google, en una constante: lo usan la credencial del agente y la
+   comprobacion de quien llama desde la pantalla. */
+const IDT_URL    = 'https://identitytoolkit.googleapis.com';
 const AGENTE_EMAIL    = process.env.AGENTE_EMAIL    || 'agente@academiadg.local';
 const AGENTE_PASSWORD = process.env.AGENTE_PASSWORD || '';
 
@@ -156,7 +159,7 @@ async function credencial(){
   if(_cred && _cred.vence > Date.now()) return _cred.token;
   if(!AGENTE_PASSWORD) throw new Error('Falta la contraseña del agente (AGENTE_PASSWORD)');
   const r = await fetch(
-    'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key='+FB_API_KEY,
+    IDT_URL+'/v1/accounts:signInWithPassword?key='+FB_API_KEY,
     { method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ email:AGENTE_EMAIL, password:AGENTE_PASSWORD, returnSecureToken:true }) });
   const d = await r.json();
@@ -2073,6 +2076,168 @@ async function relojDeCierre(){
   }
 }
 setInterval(relojDeCierre, 60 * 1000);
+
+/* ============================================================
+   EL DÍA EN VIVO, PARA LA PANTALLA DE HISTORIAL
+
+   POR QUÉ ESTÁ ACÁ Y NO EN EL HTML
+   La regla que decide si una clase se cobra vive en armarFilasDelDia() y en
+   ningún otro lado. La pantalla podría recalcularla sola, pero entonces habría
+   DOS reglas: el día que alguien cambie una y no la otra, lo que se ve en
+   pantalla y lo que se cobra dejan de coincidir, y nadie se entera hasta que
+   un profe cobra de menos. Por eso la pantalla pregunta y no calcula.
+
+   DOS PUERTAS
+   · GET  /dia-en-vivo?fecha=   qué diría el cierre si cerrara ahora mismo
+   · POST /guardar-dia          administración lo revisó y lo deja guardado
+
+   QUIÉN PUEDE
+   No la clave compartida del agente, sino el login de Google de la persona,
+   con el MISMO criterio que ya usa la pantalla: usuario activo y admin. La
+   clave del agente no se puede poner en un HTML público.
+   ============================================================ */
+
+/* El correo como lo guarda Firebase: los puntos no se pueden usar de llave. */
+function claveCorreo(m){ return String(m).trim().toLowerCase().replace(/\./g, ','); }
+
+/* De quién es este token. Se le pregunta a Google, que es el único que sabe
+   firmar: un token inventado no pasa de acá. */
+async function correoDelToken(token){
+  if(!token) throw new Error('sin token');
+  const r = await fetch(IDT_URL + '/v1/accounts:lookup?key=' + FB_API_KEY,
+    { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ idToken: token }) });
+  const d = await r.json().catch(() => null);
+  const u = d && d.users && d.users[0];
+  if(!r.ok || !u || !u.email) throw new Error('el token no sirve o venció');
+  return String(u.email).toLowerCase();
+}
+
+/* Quién llama y si tiene permiso. Mismo criterio que alumno-historial.html:
+   esto toca plata, así que solo administradores. */
+async function quienLlama(req){
+  const auth = String(req.headers.authorization || '');
+  const token = auth.replace(/^Bearer\s+/i, '') || (req.body && req.body.token) || req.query.token || '';
+  const correo = await correoDelToken(token);
+  const ficha = await leerFirebase('usuarios/' + claveCorreo(correo)) || {};
+  const permisos = ficha.permisos || {};
+  if(ficha.activo !== true || permisos.admin !== true)
+    throw new Error('esta sección es solo para administradores');
+  return { correo, nombre: ficha.nombre || '' };
+}
+
+/* Contesta el error como corresponde: 401 si no pudo identificarse o no tiene
+   permiso, 500 si se rompió otra cosa. Sin esto todo sale como 500 y desde la
+   pantalla no hay forma de saber si hay que volver a entrar. */
+function contestarError(res, e){
+  const m = e.message || 'error';
+  const dePermiso = /token|permiso|administradores|venció/i.test(m);
+  res.status(dePermiso ? 401 : 500).json({ ok:false, error:m });
+}
+
+/* ------------------------------------------------------------
+   VER EL DÍA COMO ESTÁ AHORA
+
+   Devuelve las filas que el cierre escribiría en este momento, sin escribir
+   nada. Si el día ya está cerrado, devuelve TAMBIÉN lo que quedó guardado:
+   son cosas distintas y la pantalla tiene que poder mostrar las dos, porque lo
+   guardado puede tener correcciones hechas a mano que lo de ahora no tiene.
+   ------------------------------------------------------------ */
+app.get('/dia-en-vivo', async (req, res) => {
+  try{
+    const quien = await quienLlama(req);
+    const fecha = String(req.query.fecha || hoyAsuncion());
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha))
+      return res.status(400).json({ ok:false, error:'fecha inválida, va como 2026-08-25' });
+
+    const [enVivo, guardado] = await Promise.all([
+      armarFilasDelDia(fecha),
+      leerFirebase('historial_v2/' + fecha).catch(() => null)
+    ]);
+
+    res.json({
+      ok: true, fecha, quien: quien.correo, hoy: hoyAsuncion(),
+      filas: enVivo.filas, avisos: enVivo.avisos, vacio: enVivo.vacio,
+      cerrado: guardado ? {
+        cuando: guardado.cerrado || '', por: guardado.por || '',
+        aMano: !!guardado.aMano, filas: (guardado.filas || []).length,
+        correcciones: guardado.correcciones || []
+      } : null,
+      guardadas: guardado ? (guardado.filas || []) : null,
+      version: VERSION
+    });
+  }catch(e){ contestarError(res, e); }
+});
+
+/* ------------------------------------------------------------
+   GUARDAR EL DÍA REVISADO
+
+   Lo que llega son las filas tal como quedaron en pantalla después de que
+   administración corrigió lo que había que corregir.
+
+   POR QUÉ NO SE PUEDE DUPLICAR
+   El día vive en historial_v2/<fecha>: una sola fecha, un solo lugar. Guardar
+   dos veces reescribe ese lugar, no agrega un día nuevo al lado.
+
+   POR QUÉ NO SE PISA SOLO
+   Una vez guardado a mano, el cierre de las 23:30 encuentra el día cerrado y
+   lo saltea (cerrarDia ya lo hacía). Y si administración vuelve a guardar
+   encima, la fecha del cierre original NO se toca: se anota aparte en
+   correcciones[], para que después se pueda ver quién cambió qué y cuándo.
+   ------------------------------------------------------------ */
+app.post('/guardar-dia', async (req, res) => {
+  try{
+    const quien = await quienLlama(req);
+    const fecha = String((req.body && req.body.fecha) || '');
+    const filas = (req.body && req.body.filas) || null;
+    const nota  = String((req.body && req.body.nota) || '').trim();
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha))
+      return res.status(400).json({ ok:false, error:'fecha inválida, va como 2026-08-25' });
+    if(!Array.isArray(filas) || !filas.length)
+      return res.status(400).json({ ok:false, error:'no llegó ninguna fila' });
+    /* Las diez columnas de siempre. Una fila corta acá es una columna corrida
+       en Caja, y eso se paga mal sin que se note. */
+    const mala = filas.findIndex(f => !Array.isArray(f) || f.length !== 10);
+    if(mala >= 0)
+      return res.status(400).json({ ok:false, error:'la fila ' + (mala+1) + ' no tiene las 10 columnas' });
+    /* Todas las filas tienen que ser del día que se está guardando. */
+    const otroDia = filas.findIndex(f => String(f[0]) !== fecha);
+    if(otroDia >= 0)
+      return res.status(400).json({ ok:false, error:'la fila ' + (otroDia+1) + ' es de otra fecha' });
+
+    const antes = await leerFirebase('historial_v2/' + fecha).catch(() => null);
+    const ahora = new Date().toISOString();
+    const yaEstaba = !!(antes && antes.filas);
+
+    const dato = {
+      filas,
+      /* La fecha del cierre original no se pisa nunca: dice cuándo se cerró el
+         día, no cuándo fue la última corrección. */
+      cerrado: yaEstaba ? (antes.cerrado || ahora) : ahora,
+      por: yaEstaba ? (antes.por || quien.correo) : quien.correo,
+      aMano: true,
+      revisadoPor: quien.correo,
+      revisado: ahora,
+      version: VERSION
+    };
+    if(yaEstaba){
+      const previas = Array.isArray(antes.correcciones) ? antes.correcciones : [];
+      dato.correcciones = previas.concat([{
+        cuando: ahora, por: quien.correo,
+        filasAntes: (antes.filas || []).length, filasAhora: filas.length,
+        nota: nota || ''
+      }]);
+    } else if(nota){
+      dato.nota = nota;
+    }
+
+    await guardarEnFirebase('historial_v2/' + fecha, dato);
+    console.log('Dia guardado a mano: ' + fecha + ' · ' + filas.length + ' filas · ' + quien.correo +
+                (yaEstaba ? ' (corrección)' : ''));
+    res.json({ ok:true, fecha, filas:filas.length, corregido:yaEstaba,
+               cerrado:dato.cerrado, por:dato.por, revisadoPor:quien.correo });
+  }catch(e){ contestarError(res, e); }
+});
 
 /* A mano, por si hay que rehacer un día o cerrar uno que quedó abierto.
    Pide la misma clave que el resto de los endpoints. */
