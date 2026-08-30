@@ -1903,9 +1903,26 @@ async function armarFilasDelDia(fecha, diaDado, padDado){
         continue;
       }
 
-      /* ALTO RENDIMIENTO. El bloque con lista adentro se abre en una fila por
-         alumno: son clases de verdad, se cobran y aportan a la bolsa. El tipo
-         dice la duración (AR60 / AR30), que es lo que define cuánto aporta. */
+      /* ============================================================
+         ALTO RENDIMIENTO. El bloque con lista adentro se abre en una fila por
+         alumno. El tipo dice la duración (AR60 / AR30), que es lo que define
+         cuánto le aporta al profe.
+
+         AL ALUMNO DE ALTO RENDIMIENTO NO SE LE COBRA ACÁ.
+         Paga una mensualidad aparte, por fuera del sistema. Si estas filas
+         fueran "Sí" como cualquier clase, Caja se lo cobraría de nuevo: pagaría
+         dos veces. Por eso el cobro va en "—", el mismo que usan el bloque
+         vacío y el profe ayudante, y que significa "esto no entra en la cuenta
+         de nadie".
+
+         PERO SÍ LE PAGA AL PROFE.
+         El alumno que VINO aporta a la bolsa de esa hora —25.000 la hora,
+         12.500 la media, según el aporte cargado en Tipos de clase— y se
+         reparte como cualquier otra clase, entre todos los profes que
+         trabajaron esa hora. El que faltó no aporta (decidido por José el
+         29/08/2026), y por eso el estado sigue diciendo si vino o no: de ahí
+         lo saca Caja, ya no del cobro.
+         ============================================================ */
       if(rec.mod === 'BLOQUE' || /ALTO RENDIMIENTO/i.test(rec.nombre)){
         const lista = (rec.lista && rec.lista.length) ? rec.lista : null;
         if(lista && /ALTO RENDIMIENTO/i.test(rec.nombre)){
@@ -1916,8 +1933,9 @@ async function armarFilasDelDia(fecha, diaDado, padDado){
             const falto = marc[nomAl] === 'ausente' || marc[clave] === 'ausente';
             filas.push([fecha, nomAl, hora, sedeN, rec.profe || '', tipoAR,
                         falto ? 'Ausente (avisó)' : 'Presente',
-                        falto ? 'No' : 'Sí',
-                        falto ? 'alto rendimiento · faltó' : 'alto rendimiento',
+                        '—',
+                        falto ? 'alto rendimiento · faltó · paga mensual aparte'
+                              : 'alto rendimiento · paga mensual aparte',
                         fichaDelPadron(pad, nomAl).id || '']);
           }
           continue;
