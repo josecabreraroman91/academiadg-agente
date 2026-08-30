@@ -127,7 +127,10 @@ function anotar(evento){
 app.use(function(req, res, next){
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key');
+  /* Authorization va aca desde que la pantalla del historial se identifica
+     con el login de Google de la persona. Sin nombrarlo, el navegador corta
+     el pedido antes de que salga y no se ve ni un error del servidor. */
+  res.header('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization');
   if(req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
