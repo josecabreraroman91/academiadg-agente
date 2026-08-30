@@ -2118,11 +2118,30 @@ async function correoDelToken(token){
 
 /* Quién llama y si tiene permiso. Mismo criterio que alumno-historial.html:
    esto toca plata, así que solo administradores. */
+/* Lee una ruta con el token de OTRO, no con la credencial del agente. Se usa
+   solo para la ficha de quien llama: es lo único que las reglas le dejan leer. */
+async function leerConToken(ruta, token){
+  const r = await fetch(FB_URL + '/' + ruta + '.json?auth=' + encodeURIComponent(token));
+  if(!r.ok) throw new Error('Firebase respondió ' + r.status + ' en ' + ruta);
+  return await r.json();
+}
+
 async function quienLlama(req){
   const auth = String(req.headers.authorization || '');
   const token = auth.replace(/^Bearer\s+/i, '') || (req.body && req.body.token) || req.query.token || '';
   const correo = await correoDelToken(token);
-  const ficha = await leerFirebase('usuarios/' + claveCorreo(correo)) || {};
+  /* ============================================================
+     LA FICHA SE LEE CON EL TOKEN DE LA PERSONA, NO CON EL DEL AGENTE.
+
+     Las reglas de Firebase dejan que cada uno lea SU PROPIA ficha de usuarios
+     ($u === auth.token.email) y nada más: el nodo entero solo lo lee un admin.
+     El agente no es admin, así que preguntando con su credencial recibía un
+     401 y la pantalla no dejaba entrar aunque la persona SÍ fuera admin.
+     Preguntando con el token de quien llama, la regla lo permite.
+
+     Y de paso es más seguro: el agente nunca ve fichas ajenas.
+     ============================================================ */
+  const ficha = await leerConToken('usuarios/' + claveCorreo(correo), token) || {};
   const permisos = ficha.permisos || {};
   if(ficha.activo !== true || permisos.admin !== true)
     throw new Error('esta sección es solo para administradores');
