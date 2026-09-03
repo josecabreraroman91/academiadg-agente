@@ -1793,6 +1793,63 @@ function claveConfirmacion(tel, nombre, hora, sede){
    `yaEnviados` es lo leído de Firebase (objeto {clave:ts}) o un Set de claves.
    También corta duplicados EXACTOS dentro del mismo lote. Función pura: se
    testea sin tocar Firebase. */
+/* ============================================================
+   LAS TANDAS: nunca dos mensajes seguidos al mismo número
+
+   El 03/09/2026 a los hermanos Santander (595983757010) les salieron los dos
+   mensajes a las 15:13, en el MISMO segundo. Ninguno de los dos tuvo
+   respuesta. José tuvo que mandar el de Benjamin a mano a las 18:33 y
+   contestaron a los 14 minutos.
+
+   Es el problema de entrega silenciosa de Meta: dos mensajes al mismo número
+   con segundos de diferencia y entrega uno solo. No da error, no rechaza: el
+   sistema los da por enviados y uno se pierde.
+
+   Idea de José: en vez de esperar entre mensajes, se reparte en TANDAS. La
+   primera lleva UN mensaje por número; la segunda, el segundo de cada número
+   que tenga más de uno; y así. Entre el primero y el segundo mensaje de un
+   mismo número pasa toda una vuelta —decenas de mensajes— en vez de 120 ms.
+
+   No se manda ni un mensaje de más ni de menos: es la MISMA lista, ordenada
+   distinto.
+   ============================================================ */
+function repartirEnTandas(lista){
+  const porNumero = new Map();
+  for(const a of (lista||[])){
+    const k = soloDigitos8(a && a.tel) || ('sin-tel-' + porNumero.size);
+    if(!porNumero.has(k)) porNumero.set(k, []);
+    porNumero.get(k).push(a);
+  }
+  const tandas = [];
+  let quedan = true, i = 0;
+  while(quedan){
+    quedan = false;
+    const tanda = [];
+    for(const cola of porNumero.values()){
+      if(i < cola.length){ tanda.push(cola[i]); quedan = true; }
+    }
+    if(tanda.length) tandas.push(tanda);
+    i++;
+  }
+  return tandas;
+}
+
+/* Entre una tanda y la siguiente se espera. Las tandas solas no alcanzan: si
+   en la lista hay pocos números distintos, la vuelta es corta y los dos
+   mensajes de un mismo número salen casi pegados igual. Con la espera, entre
+   el primero y el segundo pasan segundos de verdad, haya 80 alumnos o dos. */
+const PAUSA_ENTRE_TANDAS_MS = 20000;   // 20 s
+
+/* La lista ordenada por tandas, lista para recorrer de una. Devuelve además
+   en qué tanda cae cada uno, para el reporte. */
+function ordenarPorTandas(lista){
+  const tandas = repartirEnTandas(lista);
+  const out = [];
+  tandas.forEach((t, n) => t.forEach(a => out.push({ ...a, _tanda: n + 1 })));
+  return { orden: out, cuantasTandas: tandas.length,
+           porTanda: tandas.map(t => t.length) };
+}
+
 function filtrarYaEnviados(lista, yaEnviados){
   const set = yaEnviados instanceof Set ? new Set(yaEnviados)
                                         : new Set(Object.keys(yaEnviados||{}));
@@ -2434,8 +2491,26 @@ app.post('/enviar-confirmaciones', async (req,res) => {
     const paraGuardar = {};       // últimos 8 dígitos -> nombre(s) a quien le mandamos
     const paraEntrega = {};       // clave del id -> registro de entrega (lo completa el webhook)
     const confirmadasNuevas = {}; // clave alumno-clase -> ts, para el candado de hoy
+    /* EL ORDEN: una vuelta completa por numero antes de repetir ninguno.
+       Es la MISMA lista, solo que el segundo mensaje de un mismo telefono
+       sale despues de toda una vuelta y no 120 ms despues. */
+    const _t = ordenarPorTandas(aEnviar);
+    const enOrden = _t.orden;
+    if(_t.cuantasTandas > 1)
+      console.log('envio en ' + _t.cuantasTandas + ' tanda(s): ' + _t.porTanda.join(' + '));
+
     let idxEnvio = 0;
-    for(const a of aEnviar){
+    let _tandaActual = 0;
+    for(const a of enOrden){
+      /* Cambio de tanda: se espera antes de mandarle el SEGUNDO mensaje a un
+         número que ya recibió uno en esta corrida. */
+      if(a._tanda && a._tanda !== _tandaActual){
+        if(_tandaActual > 0){
+          console.log('tanda ' + _tandaActual + ' lista; espero antes de la ' + a._tanda);
+          await new Promise(ok => setTimeout(ok, PAUSA_ENTRE_TANDAS_MS));
+        }
+        _tandaActual = a._tanda;
+      }
       const r = await enviarConfirmacion(a.tel, a.nombre, a.hora, a.sede, plantilla);
       if(r.ok){ bien++; if(a._clave) confirmadasNuevas[a._clave] = new Date().toISOString(); } else { mal++; }
       const u8 = soloDigitos8(a.tel);
