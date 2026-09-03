@@ -183,6 +183,19 @@ async function leerFirebase(ruta){
   return await r.json();
 }
 
+/* Las ULTIMAS anotaciones, sin bajarse las casi 6.000 que hay. Las claves de
+   push de Firebase son cronologicas, asi que ordenar por clave y pedir las
+   ultimas alcanza; y "$key" no necesita indice en las reglas. */
+async function leerUltimasAnotaciones(cuantas){
+  const tk = await credencial();
+  const url = FB_URL + '/agente_v1/anotaciones.json?auth=' + encodeURIComponent(tk) +
+              '&orderBy=' + encodeURIComponent('"$key"') +
+              '&limitToLast=' + (Number(cuantas) || 100);
+  const r = await fetch(url);
+  if(!r.ok) throw new Error('Firebase respondió ' + r.status + ' al leer la libreta');
+  return await r.json();
+}
+
 /* Agrega un renglón nuevo. Nunca pisa nada: la libreta no se corrige ni se
    borra, y eso lo garantizan las reglas de Firebase, no este código. */
 async function agregarEnFirebase(ruta, dato){
@@ -918,6 +931,14 @@ async function anotarEnLibreta(datos){
     ts:     Date.now(),
     estado: 'pendiente'
   };
+  /* EL wamid, PARA PODER BAJAR LA BANDERA DESPUES
+     Marcar un mensaje como leido en WhatsApp exige su identificador, y hasta
+     ahora se perdia apenas terminaba de procesarse el webhook. Sin el, un
+     mensaje que quedo sin leer a proposito (celeste) no se podia marcar nunca
+     mas, y el numero de Diego acumulaba mensajes sin leer para siempre.
+     Va como VALOR, no como clave: el wamid trae '.', '=' y '/', que Firebase
+     no admite en una clave. */
+  if(datos.wamid) base.wamid = String(datos.wamid);
   if(datos.fecha)  base.fecha  = datos.fecha;
   if(datos.hasta)  base.hasta  = datos.hasta;
   if(datos.motivo) base.motivo = datos.motivo;
@@ -1365,6 +1386,7 @@ app.post('/webhooks/whatsapp', (req,res) => {
             alumno: fila.quien.alumno.nombre,
             texto:  msg.texto,
             tel:    msg.tel,
+            wamid:  msg.id,
             fecha:  (fila.ubic && fila.ubic.ok && fila.ubic.fecha) ? fila.ubic.fecha : fila.clasi.fecha,
             hasta:  fila.clasi.hasta,
             motivo: fila.clasi.motivo,
@@ -1411,6 +1433,7 @@ app.post('/webhooks/whatsapp', (req,res) => {
               alumno: cand.nombre,
               texto:  msg.texto,
               tel:    msg.tel,
+              wamid:  msg.id,
               fecha:  u.fecha,
               nota:   'Número compartido entre '+cuantos+' alumnos: llegó un mensaje ("'+String(msg.texto||'').slice(0,60)+'", parecía '+ (fila.clasi.tipo) +') pero no se sabe de cuál. Revisalo y resolvelo a mano.',
               clases: u.clases
@@ -2079,6 +2102,61 @@ async function repasarDiasAbiertos(hasta){
   return rezagados;
 }
 
+/* ============================================================
+   BAJAR LA BANDERA DE "SIN LEER" CUANDO EL CASO YA SE RESOLVIO
+
+   El agente marca leido SOLO las confirmaciones limpias (ver marcarLeido mas
+   arriba). Todo lo demas queda SIN LEER a proposito: asi es como se avisa que
+   ese mensaje lo tiene que mirar una persona.
+
+   El problema era que esa bandera no se bajaba nunca. Una persona entraba al
+   calendario, resolvia el celeste, y el mensaje seguia sin leer en el celular
+   de Diego. Se le acumulaban de a decenas y no habia forma de saber cuales
+   seguian pendientes de verdad.
+
+   Ahora, cuando la anotacion deja de estar 'pendiente' —la cierre el
+   calendario, una persona o el propio agente— el mensaje se marca leido y el
+   renglon queda con leidoWpp. La bandera vuelve a significar lo que tiene que
+   significar: esto todavia nadie lo miro.
+
+   Se miran las ultimas 400 anotaciones y nada mas. Las claves de push de
+   Firebase son cronologicas, asi que limitToLast trae las mas nuevas sin
+   necesidad de indice, y no hay que bajar las casi 6.000 que hay.
+   ============================================================ */
+const LEIDOS_A_REVISAR = 400;
+
+async function bajarBanderaDeLosResueltos(){
+  if(!MARCAR_LEIDO) return { saltado:'MARCAR_LEIDO esta en false' };
+  const salida = { mirados:0, marcados:0, fallaron:0, sinWamid:0 };
+  let filas = {};
+  try{
+    filas = (await leerUltimasAnotaciones(LEIDOS_A_REVISAR)) || {};
+  }catch(e){ return { error:'no pude leer la libreta: '+e.message }; }
+
+  for(const id of Object.keys(filas)){
+    const f = filas[id];
+    if(!f) continue;
+    if(f.estado === 'pendiente') continue;      // todavia lo tiene que mirar alguien
+    if(f.leidoWpp) continue;                    // ya se marco
+    salida.mirados++;
+    if(!f.wamid){ salida.sinWamid++; continue; }  // los viejos no lo tienen: no hay nada que hacer
+    const r = await marcarLeido(f.wamid);
+    if(r.ok){
+      salida.marcados++;
+      /* Se anota SIEMPRE que salio bien, para no volver a pedirlo en el
+         proximo pase. Si la escritura falla, el peor caso es reintentar. */
+      try{ await guardarEnFirebase('agente_v1/anotaciones/'+id, { leidoWpp: Date.now() }); }catch(e){}
+    } else {
+      salida.fallaron++;
+    }
+  }
+  return salida;
+}
+
+/* Se cuelga del mismo reloj del cierre, que ya corre cada minuto, pero solo
+   cada 5: marcar leido no corre apuro y asi no se le pega a la API al pedo. */
+let _pasesDeReloj = 0;
+
 async function relojDeCierre(){
   try{
     const fecha = hoyAsuncion();
@@ -2096,7 +2174,18 @@ async function relojDeCierre(){
     console.warn('cierre automatico fallo:', e.message);
   }
 }
-setInterval(relojDeCierre, 60 * 1000);
+
+/* El reloj hace dos cosas y son independientes: si una falla, la otra sigue. */
+async function relojDelMinuto(){
+  try{ await relojDeCierre(); }catch(e){ console.warn('cierre:', e.message); }
+  _pasesDeReloj++;
+  if(_pasesDeReloj % 5 !== 0) return;
+  try{
+    const r = await bajarBanderaDeLosResueltos();
+    if(r && r.marcados) console.log('leidos al resolver: ' + JSON.stringify(r));
+  }catch(e){ console.warn('bajar bandera fallo:', e.message); }
+}
+setInterval(relojDelMinuto, 60 * 1000);
 
 /* ============================================================
    EL DÍA EN VIVO, PARA LA PANTALLA DE HISTORIAL
