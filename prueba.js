@@ -263,6 +263,29 @@ const CASOS = [
   // Deben seguir siendo NADA (REGRESIÓN: no deben volverse confirma/cancela)
   ['hola','nada'], ['gracias','nada'], ['si puedo mañana','nada'],
   ['si hay lugar','nada'], ['a qué hora?','nada'], ['buenas','nada'],
+
+  /* ---- MENSAJES REALES DEL 03/09/2026 ----
+     Los 21 alumnos que quedaron en celeste el viernes 04/09. Se revisaron uno
+     por uno en Kapso con José y se sabe qué quería decir cada uno. Estos casos
+     estan aca para que no se rompa lo que ya funciona y para ver que falta. */
+  ['ok gracias','confirma'],            // Danna Benitez: contesta asi hace un mes
+  ['ok','confirma'],                    // idem
+  ['Holii','nada'],                     // Magali: saludo suelto, no deberia ensuciar
+  ['Confirmado','confirma'],            // Magali, el mensaje siguiente
+  ['Exelente!! Gracias 🙏','confirma'], // Aracely: es el viernes que ella misma pidio
+  ['Fíjate esto','nada'],               // Yanina: cambio de tema, hablaba de un pago
+  ['Ya te completo','nada'],            // Cesar: ES DE PLATA. Hoy da confirma y no debe
+  ['👍 si preswnte los dos','confirma'],// Ami: confirma por los dos hermanos
+  ['Siiii','confirma'],                 // Andrea Mongelos
+  ['Hola! Si!','confirma'],             // Elisa Kim
+  ['A las 11 se puede ?','pedido'],     // Sol Godoy: pide otra hora
+  ['Mañana no llego 🥲','cancela'],     // Gregory Segatel
+  ['mañana no','cancela'],              // Mariana Salsamendi
+  ['No llego profe!','cancela'],        // Ignacio Moreno
+  ['Buenas mañana no','cancela'],       // Lucia Barrios
+  ['No podré ir a las 14','cancela'],   // Flavia Santillan
+  ['yo si, José no xq está de viaje','nada'],  // Andrea: reparte distinto, lo mira una persona
+  ['Yo si José nooo','nada'],                  // idem
 ];
 
 if(!process.env.ANTHROPIC_API_KEY){
